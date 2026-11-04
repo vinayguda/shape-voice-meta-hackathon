@@ -46,8 +46,11 @@ try {
   const lines = await page.evaluate(async () => {
     const response = await fetch("/api/sample");
     const data = await response.json();
-    return data.turns;
+    return data;
   });
+  await page.$eval("#context-notes", (el, value) => { el.value = value; }, lines.context);
+  await page.click("#context-load");
+  await page.waitForSelector("#context-chip:not([hidden])");
 
   async function answer(text) {
     const before = await page.$eval("#transcript", (el) => el.childElementCount);
@@ -59,7 +62,7 @@ try {
     }, {}, before);
   }
 
-  for (let i = 0; i < 3; i += 1) await answer(lines[i]);
+  for (let i = 0; i < 3; i += 1) await answer(lines.turns[i]);
   await page.evaluate(() => {
     const sheet = document.querySelector(".sheet");
     if (sheet) sheet.scrollTop = 0;
@@ -68,7 +71,7 @@ try {
   await mkdir(path.join(root, "docs"), { recursive: true });
   await page.screenshot({ path: path.join(root, "docs/screenshot-mid.png") });
 
-  for (let i = 3; i < lines.length; i += 1) await answer(lines[i]);
+  for (let i = 3; i < lines.turns.length; i += 1) await answer(lines.turns[i]);
   await page.evaluate(() => {
     const sheet = document.querySelector(".sheet");
     if (sheet) sheet.scrollTop = 0;

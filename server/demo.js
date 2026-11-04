@@ -1,6 +1,13 @@
 import { STAGES } from "./stages.js";
 import { changedKeys, executeTool, formatScope, pushLog, titleFrom, view } from "./prd.js";
 
+export const SAMPLE_CONTEXT = `Notes from a parent interview:
+Parents of kids 8 to 13 check iOS Screen Time once, feel guilty, and argue at dinner.
+They want to see patterns, like YouTube after homework, and then talk with their kid.
+They do not want app blocking or spyware-style monitoring.
+A good week is a 10-minute check-in that actually happens.
+Open worry: kids may not consent if a parent turns sharing on quietly.`;
+
 export const SAMPLE = [
   "I want an app for parents to understand their kids' screen-time habits. Not just block apps, but see patterns, like YouTube spiking after homework, and talk about it with their kids.",
   "Parents of kids 8 to 13. Usually one parent is the one who actually sits down for the weekly check-in.",

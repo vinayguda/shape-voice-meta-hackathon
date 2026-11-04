@@ -172,6 +172,15 @@ function renderPrd(changed) {
     block.append(heading, body);
     root.append(block);
   });
+  const started = (state.transcript || []).some((line) => line.role === "user");
+  const loaded = Boolean(state.context?.loaded);
+  const panel = $("context-panel");
+  const chip = $("context-chip");
+  if (panel) panel.hidden = started || loaded;
+  if (chip) {
+    chip.hidden = !loaded;
+    chip.textContent = loaded ? `Context loaded · ${state.context.label}` : "";
+  }
   if (freshNode) {
     const sheet = freshNode.closest(".sheet");
     if (sheet && freshNode.offsetTop > sheet.clientHeight * 0.45) {
@@ -198,8 +207,9 @@ function renderLog() {
     const time = document.createElement("time");
     time.textContent = new Date(entry.at).toLocaleTimeString([], { hour12: false });
     const tag = document.createElement("span");
-    tag.className = `tag ${entry.via === "model" ? "model" : entry.via === "agent" ? "agent" : ""}`;
-    tag.textContent = entry.via === "model" ? "model" : entry.via === "agent" ? "agent" : "mcp-tool";
+    const kind = entry.via === "model" ? "model" : entry.via === "agent" ? "agent" : entry.via === "tool" ? "tool" : "";
+    tag.className = `tag ${kind}`;
+    tag.textContent = entry.via === "model" ? "model" : entry.via === "agent" ? "agent" : entry.via === "tool" ? "tool" : "mcp-tool";
     const rest = document.createElement("div");
     rest.className = "rest";
     const name = document.createElement("strong");
@@ -482,6 +492,52 @@ async function downloadPrd() {
   }
 }
 
+async function loadContext(payload, token = runToken) {
+  if (!state) return;
+  const response = await fetch(`/api/session/${state.sessionId}/context`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (token !== runToken) return;
+  if (!response.ok) {
+    showBanner(data.error || "Could not load that context.");
+    return;
+  }
+  clearBanner();
+  paint(data, []);
+}
+
+async function submitContext() {
+  if (!state || busy) return;
+  const notes = $("context-notes").value.trim();
+  const url = $("context-url").value.trim();
+  const file = $("context-file").files?.[0];
+  if (!notes && !url && !file) {
+    showBanner("Paste notes, choose a file, or add a URL.");
+    return;
+  }
+  const payload = { text: notes, source: url ? "url" : file ? "file" : "paste", label: "notes" };
+  if (file) {
+    const name = file.name.toLowerCase();
+    payload.label = file.name;
+    if (name.endsWith(".pdf")) payload.pdfBase64 = bufferToBase64(await file.arrayBuffer());
+    else if (name.endsWith(".md") || name.endsWith(".txt") || name.endsWith(".markdown")) payload.text = `${notes}\n\n${await file.text()}`.trim();
+    else {
+      showBanner("Upload a .md, .txt, or .pdf file.");
+      return;
+    }
+  }
+  if (url) payload.url = url;
+  setBusy(true);
+  try {
+    await loadContext(payload);
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function playSample() {
   if (live && !health.museConfigured) {
     showBanner("The sample can run in Demo with no key. Live mode needs META_API_KEY.");
@@ -492,6 +548,7 @@ async function playSample() {
   cancelMic();
   const payload = await fetch("/api/sample").then((response) => response.json());
   await startSession(token);
+  if (token === runToken && payload.context) await loadContext({ text: payload.context, source: "sample", label: "sample notes" }, token);
   const previousVoice = voiceOn;
   voiceOn = false;
   try {
@@ -520,6 +577,7 @@ function bind() {
     startSession(runToken);
   });
   $("sample").addEventListener("click", () => { playSample().catch((error) => showBanner(error.message)); });
+  $("context-load").addEventListener("click", () => { submitContext().catch((error) => showBanner(error.message)); });
   $("speak").addEventListener("click", () => { voiceOn = true; voiceBox.checked = true; speak(state?.spoken || questionEl.textContent); });
   recommendBtn.addEventListener("click", () => {
     if (!state?.recommended) return;

@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv, baseUrl, forceDemo, maxTokens, metaKey, modelId, sttEngine, sttModel } from "./env.js";
-import { SAMPLE } from "./demo.js";
+import { extractPdfText, fetchUrlText, loadContext } from "./context.js";
+import { SAMPLE, SAMPLE_CONTEXT } from "./demo.js";
 import { takeTurn } from "./interview.js";
 import { handleMcp } from "./mcp.js";
 import { transcribeWav } from "./muse.js";
@@ -149,11 +150,37 @@ async function handle(req, res) {
     return;
   }
   if (req.method === "GET" && pathname === "/api/sample") {
-    sendJson(res, 200, { turns: SAMPLE });
+    sendJson(res, 200, { turns: SAMPLE, context: SAMPLE_CONTEXT });
     return;
   }
   if (req.method === "POST" && pathname === "/api/session") {
     sendJson(res, 200, view(createSession()));
+    return;
+  }
+
+  const sessionContext = pathname.match(/^\/api\/session\/([^/]+)\/context$/);
+  if (req.method === "POST" && sessionContext) {
+    const session = sessions.get(decodeURIComponent(sessionContext[1]));
+    if (!session) return sendJson(res, 404, { error: "No such session.", code: "not_found" });
+    const body = await readJson(req, 12_000_000);
+    let text = body.text || "";
+    let label = body.label || "notes";
+    let source = body.source || "paste";
+    if (body.url) {
+      text = await fetchUrlText(body.url);
+      label = body.label || body.url;
+      source = "url";
+    } else if (body.pdfBase64) {
+      text = extractPdfText(Buffer.from(body.pdfBase64, "base64"));
+      label = body.label || "notes.pdf";
+      source = "file";
+    }
+    if (body.text && (body.url || body.pdfBase64)) {
+      text = `${body.text.trim()}\n\n${text}`;
+      source = "mixed";
+    }
+    loadContext(session, { text, source, label });
+    sendJson(res, 200, view(session));
     return;
   }
 

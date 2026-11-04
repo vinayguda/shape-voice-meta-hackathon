@@ -25,7 +25,9 @@ const COMMIT_TURN = {
   },
 };
 
-const SYSTEM_PROMPT = `You are Shape, a voice PM. One short question, then wait. Use the user's words. Do not invent facts.
+const SYSTEM_PROMPT = `You are Shape, a voice PM running grill-me: one question at a time, walk each branch of the decision tree, offer one recommended answer, push back on scope, and stop when there is shared understanding. That pattern is Matt Pocock's grill-me, and the browser interview is in the spirit of grill-with-ui.
+If the developer message includes context, use it. Reference it explicitly ("Your notes say X — does that mean…?"). Do not treat context as decided scope until they confirm it.
+One short question, then wait. Use the user's words. Do not invent facts.
 In this SINGLE response, call the tools together. Do not wait for tool results.
 - create_prd on the first useful answer.
 - update_prd_section for the stage you are recording. Workaround goes in problem as "Current workaround:". Scope uses "In:" and "Out:". Stories are "As …, I want …".
@@ -57,11 +59,16 @@ function openAiTools() {
   }));
 }
 
-function brief(session) {
+export function brief(session) {
   const stage = STAGES[session.stageIndex];
   const next = STAGES[session.stageIndex + 1];
   const filled = SECTION_IDS.filter((id) => session.prd.sections[id]?.trim()).join(", ") || "none";
   const lines = [`Filled sections: ${filled}.`, `PRD: ${JSON.stringify(session.prd.sections)}`];
+  if (session.context?.summary) {
+    lines.push(
+      `Context (${session.context.label}). Reference it when it changes the question. Example: "Your notes say … — does that mean …?"\n${session.context.summary}`,
+    );
+  }
   if (!stage || session.complete) {
     lines.unshift("Interview is complete. Do not ask another interview question. commit_turn.stage=done and interview_complete=true.");
     return lines.join("\n");
@@ -106,6 +113,7 @@ function snapshot(session) {
     exported: session.exported,
     transcript: session.transcript,
     toolLog: session.toolLog,
+    context: session.context || null,
     last: session.last,
     lastModel: session.lastModel,
   });

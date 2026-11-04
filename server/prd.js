@@ -63,6 +63,7 @@ export function createSession(id = crypto.randomUUID()) {
       pushback: false,
     },
     lastModel: null,
+    context: null,
   };
   sessions.set(id, session);
   return session;
@@ -278,6 +279,9 @@ export function view(session) {
     stages: STAGES.map(({ id, label, short }) => ({ id, label, short })),
     sections: SECTION_META,
     lastModel: session.lastModel,
+    context: session.context?.loaded
+      ? { loaded: true, label: session.context.label, chars: session.context.chars, source: session.context.source }
+      : { loaded: false },
   };
 }
 

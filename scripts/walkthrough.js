@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanProse, demoTurn, looksBloated, SAMPLE, synthesize } from "../server/demo.js";
+import { assertPublicHttpUrl, extractPdfText, loadContext, stripHtml } from "../server/context.js";
+import { cleanProse, demoTurn, looksBloated, SAMPLE, SAMPLE_CONTEXT, synthesize } from "../server/demo.js";
 import { sttEngine } from "../server/env.js";
-import { decideAdvance, questionFitsStage, routeFor } from "../server/interview.js";
+import { brief, decideAdvance, questionFitsStage, routeFor } from "../server/interview.js";
 import { shouldDropReasoningEffort, transcribeRequest, wavIs16kMono } from "../server/muse.js";
 import { createSession, formatScope, titleFrom, toMarkdown } from "../server/prd.js";
 
@@ -81,6 +82,16 @@ function unit() {
   assert.equal(shaped.problem.includes("build build"), false);
   assert.equal(shaped.user_stories.includes("help with this problem"), false);
   assert.equal(/explicitly out/i.test(shaped.open_questions), false);
+  assert.equal(stripHtml("<script>alert(1)</script><style>p{}</style><p>Hello &amp; notes</p>"), "Hello & notes");
+  assert.throws(() => extractPdfText(Buffer.from("not a pdf")), /PDF/);
+  const pdf = Buffer.from("%PDF-1.1\n1 0 obj<</Length 52>>stream\n(Parents check screen time before dinner tonight) Tj\nendstream\nendobj\n");
+  assert.match(extractPdfText(pdf), /Parents check screen time/);
+  const noted = createSession();
+  loadContext(noted, { text: SAMPLE_CONTEXT, source: "sample", label: "sample notes" });
+  assert.ok(noted.toolLog.some((entry) => entry.name === "load_context"));
+  assert.match(brief(noted), /Your notes say/);
+  assert.match(brief(noted), /YouTube/);
+  assert.throws(() => assertPublicHttpUrl("http://127.0.0.1/secret"), /public/);
   assert.equal(looksBloated(SAMPLE[4]), false);
   assert.equal(looksBloated("We should ship chat, payments, social profiles, an admin console, analytics, notifications, a marketplace, and a native client."), true);
   assert.match(formatScope(SAMPLE[4]), /In:\n- weekly pattern summary/);
@@ -224,6 +235,16 @@ async function http() {
 
   const sample = await fetch(`${base}/api/sample`).then((response) => response.json());
   assert.deepEqual(sample.turns, SAMPLE);
+  assert.match(sample.context, /YouTube/);
+  const withNotes = await post("/api/session", {});
+  const loaded = await post(`/api/session/${withNotes.json.sessionId}/context`, {
+    text: SAMPLE_CONTEXT,
+    source: "paste",
+    label: "sample notes",
+  });
+  assert.equal(loaded.status, 200, loaded.text);
+  assert.equal(loaded.json.context.loaded, true);
+  assert.ok(loaded.json.toolLog.some((entry) => entry.name === "load_context"));
 
   const created = await post("/api/session", {});
   assert.equal(created.status, 200);

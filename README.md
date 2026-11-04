@@ -112,10 +112,14 @@ curl -s http://localhost:3000/mcp \
 
 LiveKit Agents would work, and the earlier Voice Agent Studio project was built that way. This repo does not copy that code. Shape stays one Node process: the browser records, Muse Voice Transcribe transcribes, Muse Spark interviews, and `speechSynthesis` speaks. Use headphones so the reply does not walk back into the mic. Typing and **Play sample idea** cover a machine with no microphone. Set `META_STT=browser` if you want the Web Speech API instead of Muse.
 
+Before the first question you can paste notes, upload a `.md`, `.txt`, or text-based `.pdf`, or give a public URL. Shape stores that on the session, logs `load_context`, and puts a short summary in the Muse prompt on every turn so the question can cite it ("Your notes say X — does that mean…?"). **Play sample idea** loads an example set of parent-interview notes. The header shows **Context loaded** once it's in.
+
 ## Inspiration
 
-- **Matt Pocock's grill-me skill.** It interviews you one question at a time, walks each branch of the decision tree, and offers a recommended answer until there is shared understanding. Shape keeps that discipline and does it by voice. See [mattpocock/skills](https://github.com/mattpocock/skills).
-- **[grill-with-ui](https://github.com/jasonku09/grill-with-ui).** An agent-agnostic grilling interview on a local browser page instead of a terminal. Shape's twist is the real-time voice agent and the PRD canvas filling in beside the transcript.
+Shape's interviewer follows **grill-me**: one question at a time, walk each branch of the decision tree, offer a recommended answer, push back on scope, and stop when there is shared understanding.
+
+- **Matt Pocock's grill-me skill.** That is the pattern above. See [mattpocock/skills](https://github.com/mattpocock/skills).
+- **[grill-with-ui](https://github.com/jasonku09/grill-with-ui)** by jasonku09. An agent-agnostic grilling interview on a local browser page instead of a terminal. Shape keeps the interview in the browser, does it by voice, and fills the PRD canvas live.
 
 ## What existed before
 
