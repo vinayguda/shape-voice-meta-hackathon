@@ -69,7 +69,7 @@ A live interview turn is **one** chat completion. The spoken reply comes back in
 
 The mic is push-to-talk. The browser records a clip, resamples it to 16 kHz mono WAV, and Shape posts it to `POST /v1/asr/transcribe`. That call is verified: HTTP 200, transcript in `transcript`, about 1–2 seconds for a 4 second clip. The JSON part must be exactly `{"model":"muse-voice-transcribe-1.0","audioEncoding":"WAV","sampleRateHertz":16000}`. `audioEncoding` is case-sensitive (`wav`, `LINEAR16`, and `PCM_S16LE` return 400). `POST /v1/audio/transcriptions` returns 404, and the realtime WebSocket is not used. Each clip is a row in the tool log (`asr/transcribe`).
 
-`META_STT=browser` forces the Web Speech API instead. With no API key the mic uses that same browser fallback so Demo mode still runs. Meta does not ship text-to-speech here, so replies use `speechSynthesis`.
+`META_STT=browser` forces the Web Speech API in Live mode. **Demo mode always uses browser speech**, even when `META_API_KEY` is set, so a demo makes no Meta calls. With no key, Live mode uses that same browser fallback. Meta does not ship text-to-speech here, so replies use `speechSynthesis`.
 
 The header pill and the tool log show the model id, latency, and reasoning-token count on live turns.
 
@@ -78,9 +78,9 @@ The header pill and the tool log show the model id, latency, and reasoning-token
 ```mermaid
 flowchart LR
   person[Person] --> browser[Browser]
-  browser -->|"16 kHz mono WAV"| stt["muse-voice-transcribe-1.0\nPOST /v1/asr/transcribe"]
+  browser -->|"Live mic: 16 kHz mono WAV"| stt["muse-voice-transcribe-1.0\nPOST /v1/asr/transcribe"]
   stt --> turn["Shape /api/turn"]
-  browser -->|"typed text, or META_STT=browser"| turn
+  browser -->|"Demo mic, typed text, or META_STT=browser"| turn
   turn -->|"Live mode"| spark["muse-spark-1.3\nPOST /v1/chat/completions"]
   spark -->|tool calls| tools["create_prd\nupdate_prd_section\nexport_prd"]
   tools --> canvas[PRD canvas]
@@ -88,6 +88,110 @@ flowchart LR
   turn -->|spoken reply| voice[speechSynthesis]
   canvas --> file[Markdown download]
 ```
+
+### Interview
+
+```mermaid
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: setup
+    lg1: loop
+    lg2: finish
+  }
+  class lg0 tan
+  class lg1 blue
+  class lg2 teal
+  s0: New session
+  s1: Shape asks the stage question
+  s2: Your notes loaded
+  s3: Your answer heard
+  s4: Shape picks its recommended answer
+  s5: PRD created, Problem written
+  s6: Section written
+  s7: All 7 sections written
+  s8: PRD exported
+  [*] --> s0
+  s0 --> s1: you start the interview
+  s0 --> s2: you paste notes or a link
+  s1 --> s3: you answer
+  s1 --> s4: you say 'not sure'
+  s2 --> s1: you start the interview
+  s3 --> s1: nothing usable to write [answer too short]
+  s3 --> s5: Shape writes the section
+  s4 --> s5: Shape saves it as 'Suggested:'
+  s5 --> s1: Shape asks about Target user
+  s3 --> s6: Shape writes the section
+  s4 --> s6: Shape saves it as 'Suggested:'
+  s6 --> s1: Shape asks the next stage [stages left]
+  s6 --> s7: after Risks is written
+  s7 --> s8: Shape exports the PRD
+  class s0 tan
+  class s1 blue
+  class s2 tan
+  class s3 blue
+  class s4 blue
+  class s5 blue
+  class s6 blue
+  class s7 teal
+  class s8 teal
+```
+
+### One turn
+
+```mermaid
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: rest
+    lg1: turn
+    lg2: error
+    lg3: Breaks DemoMakesNoApiCall or ModelReplyIsSpoken in some cases
+    lg4: Path to the DemoMakesNoApiCall or ModelReplyIsSpoken bug
+  }
+  class lg0 tan
+  class lg1 blue
+  class lg2 pink
+  class lg3 mayBreak
+  class lg4 bugPath
+  s0: Idle
+  s1: Recording
+  s2: Thinking
+  s3: Transcribing (Muse Voice Transcribe)
+  s4: Updating the PRD
+  s5: Error message shown
+  s6: Speaking the reply
+  [*] --> s0
+  s0 --> s1: you click Mic and talk
+  s1 --> s2: browser speech hears you [no key]
+  s1 --> s3: you click Stop [server has a key]
+  s2 --> s5: no key on the server [Live mode] or the model fails or times out or the model pushes back
+  s2 --> s4: canned reply, no API call [Demo mode] or the model replies with tools [Live mode]
+  s3 --> s5: transcription fails
+  s3 --> s2: your words come back
+  s4 --> s6: sections saved, stage moves on
+  s5 --> s0: you try again
+  s6 --> s0: Shape finishes talking
+  classDef mayBreak fill:#fff3e6,stroke:#e8730c,stroke-width:2.5px,color:#b85a06
+  class s0 tan
+  class s0 mayBreak
+  class s0 bugPath
+  class s1 blue
+  class s1 bugPath
+  class s2 blue
+  class s2 mayBreak
+  class s2 bugPath
+  class s3 blue
+  class s3 mayBreak
+  class s3 bugPath
+  class s4 blue
+  class s4 mayBreak
+  class s5 pink
+  class s5 mayBreak
+  class s5 bugPath
+  class s6 blue
+  class s6 mayBreak
+```
+
+Statecharts generated and model-checked (TLA+/TLC) with the statechart skill from Lauren Tan's pstack (MIT). Sources and views: `docs/statecharts/`. The checked turn machine still shows two edges this PR closes: Demo mic audio is not sent to Muse, and a `pushback: true` reply no longer rolls the turn back.
 
 Demo mode walks the same graph and the same tool executor with canned replies, so the UI still runs if the key is missing or the API flakes. Switch the header to **Live Muse** and the next answer is a real `muse-spark-1.3` call. The opening question is the first branch of the graph and does not spend a request. Every answer after that does.
 

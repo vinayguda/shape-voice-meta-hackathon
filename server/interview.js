@@ -406,7 +406,7 @@ async function runLive(session, text) {
     say: spoken,
     question: spoken,
     recommended: recommended || "",
-    pushback: Boolean(committed?.pushback) && !advanced,
+    pushback: Boolean(committed?.pushback) && progress.stayed,
   };
   if (session.complete) session.prd.status = "ready";
   if (session.complete && !session.exported) {

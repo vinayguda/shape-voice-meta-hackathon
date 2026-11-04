@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { assertPublicHttpUrl, extractPdfText, loadContext, stripHtml } from "../server/context.js";
 import { cleanProse, demoTurn, isUnsure, looksBloated, rewriteProblem, SAMPLE, SAMPLE_CONTEXT, synthesize } from "../server/demo.js";
 import { sttEngine } from "../server/env.js";
-import { brief, decideAdvance, questionFitsStage, routeFor } from "../server/interview.js";
+import { brief, decideAdvance, questionFitsStage, routeFor, takeTurn } from "../server/interview.js";
 import { shouldDropReasoningEffort, transcribeRequest, wavIs16kMono } from "../server/muse.js";
 import { createSession, executeTool, formatScope, titleFrom, toMarkdown } from "../server/prd.js";
 
@@ -345,12 +345,73 @@ async function http() {
   assert.equal(await note.text(), "");
 }
 
+async function pushbackTurn() {
+  const savedKey = process.env.META_API_KEY;
+  const savedFetch = globalThis.fetch;
+  process.env.META_API_KEY = "LLM_test_key";
+  globalThis.fetch = async (url) => {
+    if (!String(url).includes("/chat/completions")) throw new Error(`unexpected fetch ${url}`);
+    const body = {
+      id: "chatcmpl-pushback",
+      model: "muse-spark-1.3",
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_upd",
+              type: "function",
+              function: {
+                name: "update_prd_section",
+                arguments: JSON.stringify({
+                  section: "problem",
+                  content: "Parents cannot tell which apps eat the evening. They only notice the fight.",
+                }),
+              },
+            },
+            {
+              id: "call_commit",
+              type: "function",
+              function: {
+                name: "commit_turn",
+                arguments: JSON.stringify({
+                  say: "That's still broad. Who feels this on a bad Tuesday?",
+                  recommended_answer: "The parent who runs the weekly check-in.",
+                  stage: "target_user",
+                  pushback: true,
+                  interview_complete: false,
+                }),
+              },
+            },
+          ],
+        },
+      }],
+      usage: { completion_tokens: 80, completion_tokens_details: { reasoning_tokens: 20 } },
+    };
+    return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const session = createSession();
+    const result = await takeTurn(session, "I want an app that helps parents understand screen time.", { live: true });
+    assert.ok(result.sessionId);
+    assert.match(session.prd.sections.problem, /Parents/);
+    assert.equal(/I'm not sure/i.test(session.prd.sections.problem), false);
+  } finally {
+    globalThis.fetch = savedFetch;
+    if (savedKey === undefined) delete process.env.META_API_KEY;
+    else process.env.META_API_KEY = savedKey;
+  }
+}
+
 const child = await startServer().catch((error) => {
   console.error(error);
   process.exit(1);
 });
 try {
   unit();
+  await pushbackTurn();
   await http();
   console.log("walkthrough ok");
 } finally {
