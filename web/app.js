@@ -21,6 +21,7 @@ const sttBrowser = $("stt-browser");
 const micEngine = $("mic-engine");
 
 let health = { model: "muse-spark-1.3", museConfigured: false, forceDemo: false, stt: {} };
+let fillerAt = 0;
 let state = null;
 let live = false;
 let busy = false;
@@ -45,6 +46,12 @@ function clearBanner() {
 function setBusy(next) {
   busy = next;
   document.body.classList.toggle("is-busy", next);
+  card.classList.toggle("thinking", next && live);
+  const thinking = $("thinking");
+  if (thinking) {
+    thinking.hidden = !(next && live);
+    thinking.textContent = `Thinking… ${health.model || "muse-spark-1.3"}`;
+  }
   sendBtn.disabled = next;
   micBtn.disabled = next && !listening;
   renderStatus();
@@ -63,7 +70,7 @@ function setMode(next) {
 function renderStatus() {
   if (!state) return;
   if (busy) {
-    statusEl.textContent = live ? `Calling ${health.model}…` : "Updating the PRD…";
+    statusEl.textContent = live ? `Thinking… ${health.model}` : "Updating the PRD…";
     return;
   }
   if (live && !health.museConfigured) {
@@ -230,6 +237,7 @@ async function sendText(raw, token = runToken) {
   interimEl.textContent = "";
   setBusy(true);
   clearBanner();
+  speakFiller();
   try {
     const response = await fetch("/api/turn", {
       method: "POST",
@@ -253,6 +261,13 @@ async function sendText(raw, token = runToken) {
   } finally {
     if (token === runToken) setBusy(false);
   }
+}
+
+function speakFiller() {
+  if (!voiceOn || !live) return;
+  if (Date.now() - fillerAt < 4000) return;
+  fillerAt = Date.now();
+  speak("Got it.");
 }
 
 function speak(text) {
@@ -360,6 +375,7 @@ async function startMuseRec() {
     micBtn.setAttribute("aria-pressed", "false");
     micBtn.textContent = "Mic";
     recordStream.getTracks().forEach((track) => track.stop());
+    speakFiller();
     setBusy(true);
     statusEl.textContent = "Transcribing with muse-voice-transcribe-1.0…";
     try {

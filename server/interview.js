@@ -1,9 +1,8 @@
 import { forceDemo, maxTokens, metaKey, modelId } from "./env.js";
-import { recommendFor, synthesize } from "./demo.js";
-import { demoTurn } from "./demo.js";
+import { cleanProse, demoTurn, recommendFor, synthesize } from "./demo.js";
 import { changedKeys, executeTool, MCP_TOOLS, pushLog, titleFrom, view } from "./prd.js";
 import { SECTION_IDS, STAGES } from "./stages.js";
-import { echoToolCalls, museChat, parseToolCalls, textContent, usageOf } from "./muse.js";
+import { museChat, parseToolCalls, textContent, usageOf } from "./muse.js";
 
 const COMMIT_TURN = {
   name: "commit_turn",
@@ -26,24 +25,12 @@ const COMMIT_TURN = {
   },
 };
 
-const SYSTEM_PROMPT = `You are Shape, a sharp PM interviewing a builder by voice. Follow grill-me discipline:
-- Ask exactly one question, then wait.
-- Walk this decision tree in order: problem, target_user, workaround, workflow, mvp_scope, success_metrics, risks. One follow-up if the answer is vague, then move on.
-- Offer exactly one concrete recommended_answer the user could say out loud.
-- Push back when they say everyone, list a platform of features, or give a metric with no number. Set pushback true and stay on that stage.
-- Use their words in the PRD. Do not invent users, metrics, or features. Recommendations stay in recommended_answer until they accept them.
-- Spoken lines are 1 to 3 short sentences. No markdown, no bullets. End with the one question unless the interview is complete.
-
-On every turn, call tools in this order:
-1. create_prd once, on the first useful answer.
-2. update_prd_section for every section you can honestly fill or revise.
-   problem includes the workaround once you know it, labeled "Current workaround:".
-   user_stories are "As a …, I want …" lines grounded only in what they said.
-   mvp_scope starts with "In:" and "Out:".
-   open_questions are real unanswered questions.
-3. commit_turn exactly once. stage is the stage you are ABOUT to ask. interview_complete is true only after risks is answered and you are done asking.
-
-If they revise a section after the interview is complete, update that section and confirm in one sentence.`;
+const SYSTEM_PROMPT = `You are Shape, a voice PM. One short question, then wait. Use the user's words. Do not invent facts.
+In this SINGLE response, call the tools together. Do not wait for tool results.
+- create_prd on the first useful answer.
+- update_prd_section for the stage you are recording. Workaround goes in problem as "Current workaround:". Scope uses "In:" and "Out:". Stories are "As …, I want …".
+- commit_turn in the same response. say is one or two sentences and ends with the NEXT stage's question from the developer message. stage is that next stage id. interview_complete is true only after risks is saved.
+Never ask about a stage that is already filled. If they are revising after the interview is done, update that section and confirm. No second question.`;
 
 export function routeFor(live) {
   if (forceDemo() || !live) return "demo";
@@ -72,18 +59,21 @@ function openAiTools() {
 
 function brief(session) {
   const stage = STAGES[session.stageIndex];
-  return [
-    `Current stage to record: ${stage ? stage.id : "done"}.`,
-    `Stage number: ${stage ? session.stageIndex + 1 : STAGES.length} of ${STAGES.length}.`,
-    `Interview complete: ${session.complete}.`,
-    `PRD title: ${session.prd.title}`,
-    `PRD JSON: ${JSON.stringify(session.prd.sections)}`,
-    `Accepted answers JSON: ${JSON.stringify(session.answers)}`,
-  ].join("\n");
-}
-
-function stageIndexOf(id) {
-  return STAGES.findIndex((stage) => stage.id === id);
+  const next = STAGES[session.stageIndex + 1];
+  const filled = SECTION_IDS.filter((id) => session.prd.sections[id]?.trim()).join(", ") || "none";
+  const lines = [`Filled sections: ${filled}.`, `PRD: ${JSON.stringify(session.prd.sections)}`];
+  if (!stage || session.complete) {
+    lines.unshift("Interview is complete. Do not ask another interview question. commit_turn.stage=done and interview_complete=true.");
+    return lines.join("\n");
+  }
+  lines.unshift(
+    `Record stage ${session.stageIndex + 1} of ${STAGES.length}: ${stage.id}.`,
+    `Goal: ${stage.ask}`,
+    next
+      ? `After saving it, ask ONLY: ${next.ask} commit_turn.stage="${next.id}". Do not mention earlier stages.`
+      : `This is the last stage. After saving it, commit_turn.stage="done" and interview_complete=true. Do not ask another question.`,
+  );
+  return lines.join("\n");
 }
 
 function speakable(text) {
@@ -125,11 +115,69 @@ function restore(session, snap) {
   for (const key of Object.keys(snap)) session[key] = snap[key];
 }
 
-function modelFacing(name, result) {
-  if (name === "export_prd") return { ok: true, filename: result.filename, bytes: result.bytes };
-  if (!result.ok) return result;
-  const { markdown, ...rest } = result;
-  return rest;
+const STAGE_HINTS = {
+  problem: /pain|problem|idea|one sentence/i,
+  target_user: /who|primary user|person|persona/i,
+  workaround: /today|instead|workaround|currently do/i,
+  workflow: /workflow|first try|end to end|walk/i,
+  mvp_scope: /\bin\b|first version|out of|scope/i,
+  success_metrics: /number|metric|30 days|measure|percent/i,
+  risks: /risk|assumption|open question/i,
+};
+
+export function questionFitsStage(say, stageId) {
+  const hint = STAGE_HINTS[stageId];
+  return Boolean(say && hint && hint.test(say) && say.includes("?"));
+}
+
+export function stageSectionWritten(session, stageId, before = {}) {
+  const now = session.prd.sections;
+  const changed = (id) => (now[id] || "").trim() !== (before[id] || "").trim() && Boolean((now[id] || "").trim());
+  if (stageId === "problem") return changed("problem");
+  if (stageId === "target_user") return changed("target_user");
+  if (stageId === "workaround") return changed("problem");
+  if (stageId === "workflow") return changed("user_stories");
+  if (stageId === "mvp_scope") return changed("mvp_scope");
+  if (stageId === "success_metrics") return changed("success_metrics");
+  if (stageId === "risks") return changed("risks") || changed("open_questions");
+  return false;
+}
+
+export function decideAdvance({ stageIndex, written }) {
+  if (stageIndex >= STAGES.length) return { stageIndex: STAGES.length, complete: true, stayed: false };
+  if (!written) return { stageIndex, complete: false, stayed: true };
+  const next = stageIndex + 1;
+  if (next >= STAGES.length) return { stageIndex: STAGES.length, complete: true, stayed: false };
+  return { stageIndex: next, complete: false, stayed: false };
+}
+
+function ensureStageWritten(session, stage, text, before) {
+  if (!stage || stageSectionWritten(session, stage.id, before)) return;
+  const prose = cleanProse(text);
+  if (prose.length < 12) return;
+  const meta = { source: "fallback", transport: "in-process" };
+  if (stage.id === "problem") {
+    executeTool(session, "create_prd", { title: titleFrom(text), problem: prose }, meta);
+    if (!(session.prd.sections.problem || "").includes(prose.slice(0, 24))) {
+      executeTool(session, "update_prd_section", { section: "problem", content: prose, mode: "replace" }, meta);
+    }
+  } else if (stage.id === "target_user") {
+    executeTool(session, "update_prd_section", { section: "target_user", content: prose, mode: "replace" }, meta);
+  } else if (stage.id === "workaround") {
+    const prev = (session.prd.sections.problem || "").trim();
+    const content = /current workaround\s*:/i.test(prev) ? prev : `${prev ? `${prev}\n\n` : ""}Current workaround: ${prose}`;
+    executeTool(session, "update_prd_section", { section: "problem", content, mode: "replace" }, meta);
+  } else if (stage.id === "workflow") {
+    const story = synthesize({ ...session, answers: { ...session.answers, workflow: prose } }).user_stories;
+    const line = story.split("\n\n").find(Boolean);
+    if (line) executeTool(session, "update_prd_section", { section: "user_stories", content: line, mode: "replace" }, meta);
+  } else if (stage.id === "mvp_scope") {
+    executeTool(session, "update_prd_section", { section: "mvp_scope", content: synthesize({ ...session, answers: { ...session.answers, mvp_scope: prose } }).mvp_scope || prose, mode: "replace" }, meta);
+  } else if (stage.id === "success_metrics") {
+    executeTool(session, "update_prd_section", { section: "success_metrics", content: prose, mode: "replace" }, meta);
+  } else if (stage.id === "risks") {
+    executeTool(session, "update_prd_section", { section: "risks", content: prose, mode: "replace" }, meta);
+  }
 }
 
 function fillGaps(session) {
@@ -154,23 +202,12 @@ function fillGaps(session) {
   return filled;
 }
 
-function applyProgress(session, committed, oldIndex) {
-  const done = committed?.interview_complete === true || committed?.stage === "done";
-  if (done) {
-    session.complete = true;
-    session.stageIndex = STAGES.length;
-    session.prd.status = "ready";
-    return;
-  }
-  const idx = committed?.stage ? stageIndexOf(committed.stage) : -1;
-  if (committed?.pushback && (idx < 0 || idx === oldIndex)) return;
-  if (idx > oldIndex) session.stageIndex = idx;
-  else if (committed?.pushback) return;
-  else session.stageIndex = Math.min(oldIndex + 1, STAGES.length);
-  if (session.stageIndex >= STAGES.length) {
-    session.complete = true;
-    session.prd.status = "ready";
-  }
+function applyProgress(session, written, oldIndex) {
+  const next = decideAdvance({ stageIndex: oldIndex, written });
+  session.stageIndex = next.stageIndex;
+  session.complete = next.complete;
+  if (next.complete) session.prd.status = "ready";
+  return next;
 }
 
 async function liveTurn(session, rawText) {
@@ -214,69 +251,50 @@ async function runLive(session, text) {
   let usedModel = configured;
   const started = Date.now();
 
-  for (let hop = 0; hop < 3; hop += 1) {
-    const hopStarted = Date.now();
-    const data = await museChat({ messages, tools, maxTokens: maxTokens() });
-    const choice = data.choices?.[0];
-    if (!choice) {
-      const error = new Error("Muse returned no choices.");
-      error.status = 502;
-      error.code = "bad_response";
-      throw error;
-    }
-    const message = choice.message || {};
-    const finish = choice.finish_reason || "";
-    if (finish === "length") sawLength = true;
-    const content = textContent(message.content);
-    const calls = parseToolCalls(message);
-    const usage = usageOf(data);
-    if (usage.reasoningTokens) reasoningTokens += usage.reasoningTokens;
-    usedModel = data.model || configured;
-    const latencyMs = Date.now() - hopStarted;
-    pushLog(session, {
-      name: "chat.completions",
-      via: "model",
-      transport: "none",
-      source: usedModel,
-      args: { model: usedModel, max_tokens: maxTokens(), hop },
-      summary: [
-        `${usedModel}`,
-        `${latencyMs}ms`,
-        finish ? `finish=${finish}` : "",
-        `tools=${calls.length}`,
-        usage.reasoningTokens ? `${usage.reasoningTokens} reasoning tokens` : "",
-      ].filter(Boolean).join(" · "),
-      result: { live: true, latencyMs, finish, ...usage },
-    });
+  const data = await museChat({ messages, tools, maxTokens: maxTokens() });
+  const choice = data.choices?.[0];
+  if (!choice) {
+    const error = new Error("Muse returned no choices.");
+    error.status = 502;
+    error.code = "bad_response";
+    throw error;
+  }
+  const message = choice.message || {};
+  const finish = choice.finish_reason || "";
+  if (finish === "length") sawLength = true;
+  const content = textContent(message.content);
+  const calls = parseToolCalls(message);
+  const usage = usageOf(data);
+  if (usage.reasoningTokens) reasoningTokens += usage.reasoningTokens;
+  usedModel = data.model || configured;
+  const latencyMs = Date.now() - started;
+  pushLog(session, {
+    name: "chat.completions",
+    via: "model",
+    transport: "none",
+    source: usedModel,
+    args: { model: usedModel, max_tokens: maxTokens() },
+    summary: [
+      usedModel,
+      `${latencyMs}ms`,
+      finish ? `finish=${finish}` : "",
+      `tools=${calls.length}`,
+      usage.reasoningTokens ? `${usage.reasoningTokens} reasoning tokens` : "",
+    ].filter(Boolean).join(" · "),
+    result: { live: true, latencyMs, finish, ...usage },
+  });
 
-    if (finish === "length" && !content && calls.length === 0) {
-      const error = new Error("Muse Spark spent the token budget on reasoning and returned an empty reply. Raise META_MAX_TOKENS (default 4000).");
-      error.status = 502;
-      error.code = "length";
-      throw error;
+  if (!calls.length) {
+    const parsed = extractJson(content);
+    if (parsed) {
+      applyParsed(session, parsed, usedModel);
+      spoken = speakable(parsed.say) || spoken;
+      recommended = parsed.recommended_answer || recommended;
+      committed = parsed;
+    } else {
+      spoken = speakable(content) || spoken;
     }
-
-    if (!calls.length) {
-      const parsed = extractJson(content);
-      if (parsed) {
-        applyParsed(session, parsed, usedModel);
-        spoken = speakable(parsed.say) || spoken;
-        recommended = parsed.recommended_answer || recommended;
-        committed = {
-          say: parsed.say,
-          recommended_answer: parsed.recommended_answer,
-          stage: parsed.stage,
-          pushback: parsed.pushback,
-          interview_complete: parsed.interview_complete,
-        };
-      } else {
-        spoken = speakable(content) || spoken;
-      }
-      break;
-    }
-
-    messages.push({ role: "assistant", content: content || null, tool_calls: echoToolCalls(message) });
-    const commits = [];
+  } else {
     for (const call of calls) {
       if (call.bad) {
         pushLog(session, {
@@ -287,15 +305,9 @@ async function runLive(session, text) {
           summary: "Arguments were truncated. Raise META_MAX_TOKENS.",
           args: {},
         });
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify({ ok: false, error: "arguments were not valid JSON" }),
-        });
         continue;
       }
       if (call.name === "commit_turn") {
-        commits.push(call);
         committed = call.args;
         spoken = speakable(call.args.say) || spoken;
         recommended = call.args.recommended_answer || recommended;
@@ -310,30 +322,32 @@ async function runLive(session, text) {
           },
           summary: clipSay(call.args.say),
         });
-        messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: true }) });
         continue;
       }
-      const { result } = executeTool(session, call.name, call.args, { source: usedModel, transport: "in-process" });
-      messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(modelFacing(call.name, result)) });
+      executeTool(session, call.name, call.args, { source: usedModel, transport: "in-process" });
     }
-    if (commits.length) break;
-    if (hop === 0) {
-      messages.push({
-        role: "user",
-        content: "Call commit_turn now. One spoken question, one recommended_answer, the next stage id, and interview_complete.",
-      });
-    }
+    if (!spoken) spoken = speakable(content);
   }
 
-  applyProgress(session, committed, oldIndex);
-  const advanced = session.complete || session.stageIndex !== oldIndex;
-  if (advanced && oldStage && !session.answers[oldStage.id]) session.answers[oldStage.id] = text;
-
-  const usedFallback = advanced ? fillGaps(session) : false;
-  if (!spoken) {
-    spoken = session.complete
-      ? "That's a full pass. The PRD is on the canvas. Tell me a section to change, or download the Markdown."
-      : STAGES[session.stageIndex]?.ask || "What should we change?";
+  const pushback = Boolean(committed?.pushback);
+  if (!pushback && oldStage) ensureStageWritten(session, oldStage, text, before);
+  const written = oldStage ? stageSectionWritten(session, oldStage.id, before) : false;
+  const progress = applyProgress(session, written, oldIndex);
+  if (progress.stayed === false && oldStage && !session.answers[oldStage.id]) {
+    session.answers[oldStage.id] = cleanProse(text);
+  }
+  const usedFallback = !progress.stayed ? fillGaps(session) : false;
+  const modelSay = spoken;
+  if (session.complete) {
+    spoken = modelSay && /prd|download|canvas|markdown/i.test(modelSay)
+      ? modelSay
+      : "That's a full pass. The PRD is on the canvas. Tell me a section to change, or download the Markdown.";
+  } else if (progress.stayed) {
+    const stage = STAGES[session.stageIndex];
+    spoken = stage && questionFitsStage(modelSay, stage.id) ? modelSay : stage?.ask || modelSay;
+  } else {
+    const stage = STAGES[session.stageIndex];
+    spoken = stage && questionFitsStage(modelSay, stage.id) ? modelSay : stage?.ask || modelSay;
   }
   if (!recommended && !session.complete && STAGES[session.stageIndex]) {
     recommended = recommendFor(STAGES[session.stageIndex].id, session);

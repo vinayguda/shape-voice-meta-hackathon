@@ -75,26 +75,49 @@ function asWho(who) {
   return short.charAt(0).toLowerCase() + short.slice(1);
 }
 
+export function cleanProse(text, maxSentences = 2) {
+  let value = String(text || "").replace(/\s+/g, " ").trim();
+  value = value.replace(/\b(\w+)(\s+\1\b)+/gi, "$1");
+  if (!value) return "";
+  const parts = value.split(/(?<=[.!?])\s+/).filter(Boolean);
+  value = (parts.length ? parts : [value]).slice(0, maxSentences).join(" ");
+  value = value.charAt(0).toUpperCase() + value.slice(1);
+  if (!/[.!?]$/.test(value)) value += ".";
+  return value;
+}
+
+function tidyStory(who, text) {
+  const person = asWho(who);
+  const sentence = cleanProse(text, 1);
+  if (!sentence || sentence.length > 180) return "";
+  let goal = sentence.replace(/[.!?]$/, "");
+  if (/^i want to /i.test(goal)) goal = goal.replace(/^i want to /i, "to ");
+  else if (/^i want /i.test(goal)) goal = goal.replace(/^i want /i, "");
+  else goal = goal.charAt(0).toLowerCase() + goal.slice(1);
+  if (!goal) return "";
+  return `As ${person}, I want ${goal}.`;
+}
+
 export function synthesize(session) {
   const answers = session.answers;
   const problemParts = [];
-  if (answers.problem) problemParts.push(answers.problem.trim());
-  if (answers.workaround) problemParts.push(`Current workaround: ${answers.workaround.trim()}`);
+  if (answers.problem) problemParts.push(cleanProse(answers.problem));
+  if (answers.workaround) problemParts.push(`Current workaround: ${cleanProse(answers.workaround)}`);
 
-  const who = asWho(answers.target_user || "the primary user");
-  const stories = [];
-  if (answers.problem) stories.push(`As ${who}, I want help with this problem: ${clipWords(answers.problem, 32)}`);
-  if (answers.workflow) stories.push(`As ${who}, I want this workflow to work in one sitting: ${clipWords(answers.workflow, 32)}`);
-  if (answers.workaround) stories.push(`As ${who}, I want to stop relying on this workaround: ${clipWords(answers.workaround, 28)}`);
-  if (answers.mvp_scope) stories.push(`As ${who}, I want the first version to respect this boundary: ${clipWords(answers.mvp_scope, 28)}`);
+  const who = answers.target_user || "the primary user";
+  const stories = [
+    tidyStory(who, answers.workflow || ""),
+    tidyStory(who, answers.problem || ""),
+    tidyStory(who, answers.workaround || ""),
+  ].filter(Boolean);
 
   return {
     problem: problemParts.join("\n\n"),
-    target_user: answers.target_user ? answers.target_user.trim() : "",
-    user_stories: stories.join("\n\n"),
-    mvp_scope: answers.mvp_scope ? formatScope(answers.mvp_scope) : "",
-    success_metrics: answers.success_metrics ? answers.success_metrics.trim() : "",
-    risks: answers.risks ? riskStatements(answers.risks) : "",
+    target_user: answers.target_user ? cleanProse(answers.target_user) : "",
+    user_stories: [...new Set(stories)].join("\n\n"),
+    mvp_scope: answers.mvp_scope ? formatScope(cleanProse(answers.mvp_scope, 4)) : "",
+    success_metrics: answers.success_metrics ? cleanProse(answers.success_metrics, 3) : "",
+    risks: answers.risks ? riskStatements(cleanProse(answers.risks, 3)) : "",
     open_questions: openQuestions(session),
   };
 }
@@ -127,9 +150,10 @@ function openQuestions(session) {
   if (/^(everyone|everybody|users|people|anyone)\b/i.test(session.answers.target_user || "")) {
     add("Primary user is still too broad. Who is the first real person?");
   }
-  if (session.answers.mvp_scope && !/\bout\b/i.test(session.answers.mvp_scope)) {
-    add("What is explicitly out of the first version?");
-  }
+  const scopeBlob = `${session.answers.mvp_scope || ""}\n${session.prd?.sections?.mvp_scope || ""}`;
+  const scopeDiscussed = Boolean((session.answers.mvp_scope || session.prd?.sections?.mvp_scope || "").trim());
+  const scopeNamesOut = /\bout\s*:/i.test(scopeBlob) || /\bout of (the )?(scope|mvp|first|version|v1)\b/i.test(scopeBlob);
+  if (scopeDiscussed && !scopeNamesOut) add("What is explicitly out of the first version?");
   if (session.complete && items.length === 0 && Object.keys(session.answers).length) {
     add("Shape flagged this because it never came up: what would make us change the MVP after the first ten users?");
   }

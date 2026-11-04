@@ -21,18 +21,26 @@ cd shape-voice-meta-hackathon
 make dev
 ```
 
+If `make` is not installed:
+
+```bash
+npm start
+# or
+node server/index.js
+```
+
 Open http://localhost:3000. Leave the toggle on **Demo** and click **Play sample idea**, or hold **Mic** (Chrome) and answer out loud. **Download .md** saves the PRD.
 
-`make dev` is the whole app: one Node process serves the UI, the interview, and the MCP endpoint. Demo mode does not call the network.
+That one process serves the UI, the interview, and the MCP endpoint. Demo mode does not call the network.
 
 Live Muse, when you have a key:
 
 ```bash
 cp .env.example .env   # set META_API_KEY
-make dev               # toggle Live Muse in the header
+npm start              # or: make dev
 ```
 
-`make check` runs the scripted interview, the no-key guard, and the MCP tools.
+Toggle **Live Muse** in the header. `npm run check` or `make check` runs the scripted interview, the no-key guard, and the MCP tools.
 
 ## Hackathon
 
@@ -55,7 +63,9 @@ Base URL `https://api.meta.ai/v1`. Auth `Authorization: Bearer $META_API_KEY`. C
 | `muse-spark-1.3` (override with `META_MODEL`) | Interview, follow-ups, pushback, slot extraction, PRD drafting, tool calls | `server/muse.js` `museChat` → `POST /v1/chat/completions`, called from `server/interview.js` on every **Live** user turn |
 | `muse-voice-transcribe-1.0` | Speech-to-text for the mic | `server/muse.js` `transcribeWav` → `POST /v1/asr/transcribe`. 16 kHz mono WAV. `audioEncoding` is `WAV`. |
 
-Muse Spark is a reasoning model. Reasoning tokens count against `max_tokens`. A cap of 20 comes back as `content: null` and `finish_reason=length`, so the default cap is **4000** (`META_MAX_TOKENS`). Shape sends `reasoning_effort=low` unless `META_REASONING_EFFORT=off`. If that field returns HTTP 400, the next attempt drops it for the rest of the process. Turns are not streamed: the spoken line is ready only after the tool calls, and the thinking time is already most of the 1.5–3s.
+Muse Spark is a reasoning model. Reasoning tokens count against `max_tokens`. A cap of 20 comes back as `content: null` and `finish_reason=length`. The default cap is **1500** (`META_MAX_TOKENS`) and Shape sends `reasoning_effort=low` unless `META_REASONING_EFFORT=off`. If that field returns HTTP 400, the next attempt drops it.
+
+A live interview turn is **one** chat completion. The spoken reply comes back in that same response as the PRD tool calls (`commit_turn`), and Shape applies the tools locally. On the owner's key, the previous two-call turns averaged about **16 seconds** (20.7, 13.2, 12.8, 27.4, 9.9, 13.9; each Muse call about 9 seconds, 245–1943 reasoning tokens). Dropping the second call puts a turn on the order of **one call, about 9–13 seconds**, plus about **1.6 seconds** for Muse Voice Transcribe. The screen says **Thinking…** while that call is in flight, and Shape says “Got it.” as soon as you release the mic. Raise `META_MAX_TOKENS` if a turn comes back cut off.
 
 The mic is push-to-talk. The browser records a clip, resamples it to 16 kHz mono WAV, and Shape posts it to `POST /v1/asr/transcribe`. That call is verified: HTTP 200, transcript in `transcript`, about 1–2 seconds for a 4 second clip. The JSON part must be exactly `{"model":"muse-voice-transcribe-1.0","audioEncoding":"WAV","sampleRateHertz":16000}`. `audioEncoding` is case-sensitive (`wav`, `LINEAR16`, and `PCM_S16LE` return 400). `POST /v1/audio/transcriptions` returns 404, and the realtime WebSocket is not used. Each clip is a row in the tool log (`asr/transcribe`).
 
@@ -128,7 +138,7 @@ See `.env.example`. The names that matter:
 | `META_API_KEY` | Bearer token for the Meta Model API. `MODEL_API_KEY` is also accepted. |
 | `META_BASE_URL` | `https://api.meta.ai/v1` |
 | `META_MODEL` | `muse-spark-1.3` |
-| `META_MAX_TOKENS` | Default 4000. Do not set this near 20. |
+| `META_MAX_TOKENS` | Default 1500. Do not set this near 20. |
 | `META_REASONING_EFFORT` | Default `low`. `off` disables it. |
 | `META_STT` | Unset uses Muse Voice Transcribe when a key is set. `browser` forces the Web Speech API. |
 | `META_STT_MODEL` | Default `muse-voice-transcribe-1.0`. |

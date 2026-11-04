@@ -180,6 +180,16 @@ button { cursor: pointer; }
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
+#thinking {
+  margin: 0 0 8px;
+  color: var(--lime);
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+#thinking[hidden] { display: none; }
+#question-card.thinking { border-color: var(--lime); }
 #question-card.pushback #question-kicker { color: var(--amber); }
 #question {
   margin: 0;

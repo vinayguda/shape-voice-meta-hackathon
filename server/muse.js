@@ -50,7 +50,7 @@ function delay(ms) {
 
 // Muse Spark is a reasoning model. Reasoning tokens count against max_tokens,
 // so a small cap (for example 20) comes back as content: null and
-// finish_reason: "length". The default cap is 4000. Streaming is off because
+// finish_reason: "length". The default cap is 1500. Streaming is off because
 // the spoken line usually arrives only after the tool calls, and a reasoning
 // model emits those after it finishes thinking.
 export async function museChat({ messages, tools, maxTokens: cap }) {

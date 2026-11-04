@@ -33,8 +33,8 @@ export function modelId() {
 }
 
 export function maxTokens() {
-  const n = Number(process.env.META_MAX_TOKENS || 4000);
-  if (!Number.isFinite(n) || n < 256) return 4000;
+  const n = Number(process.env.META_MAX_TOKENS || 1500);
+  if (!Number.isFinite(n) || n < 256) return 1500;
   return Math.floor(n);
 }
 
