@@ -3,11 +3,11 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertPublicHttpUrl, extractPdfText, loadContext, stripHtml } from "../server/context.js";
-import { cleanProse, demoTurn, looksBloated, SAMPLE, SAMPLE_CONTEXT, synthesize } from "../server/demo.js";
+import { cleanProse, demoTurn, isUnsure, looksBloated, rewriteProblem, SAMPLE, SAMPLE_CONTEXT, synthesize } from "../server/demo.js";
 import { sttEngine } from "../server/env.js";
 import { brief, decideAdvance, questionFitsStage, routeFor } from "../server/interview.js";
 import { shouldDropReasoningEffort, transcribeRequest, wavIs16kMono } from "../server/muse.js";
-import { createSession, formatScope, titleFrom, toMarkdown } from "../server/prd.js";
+import { createSession, executeTool, formatScope, titleFrom, toMarkdown } from "../server/prd.js";
 
 function wavHeader(rate, channels, bits) {
   const bytes = Buffer.alloc(44);
@@ -78,8 +78,20 @@ function unit() {
   scoped.answers.mvp_scope = "weekly summary only";
   scoped.prd.sections.mvp_scope = "In:\n- weekly summary\n\nOut:\n- content filtering";
   const shaped = synthesize(scoped);
-  assert.match(shaped.problem, /^I want to build an app/);
+  assert.equal(/^i want\b/i.test(shaped.problem), false);
   assert.equal(shaped.problem.includes("build build"), false);
+  assert.match(rewriteProblem("I want to build an app that helps parents track screen time."), /Parents/);
+  assert.equal(/I want to build/i.test(rewriteProblem("I want to build an app that helps parents track screen time.")), false);
+  assert.match(formatScope("In: weekly summary. Out: No content filtering"), /- content filtering/);
+  assert.equal(/No content filtering/.test(formatScope("In: weekly summary. Out: No content filtering")), false);
+  assert.equal(isUnsure("I'm not sure."), true);
+  assert.equal(isUnsure("you decide"), true);
+  const once = createSession();
+  executeTool(once, "create_prd", { title: "One", problem: "Parents need a check-in." }, { source: "test" });
+  const again = executeTool(once, "create_prd", { title: "Two", problem: "Nope." }, { source: "test" });
+  assert.equal(again.result.skipped, true);
+  assert.equal(once.prd.title, "One");
+  assert.equal(once.toolLog.filter((entry) => entry.name === "create_prd").length, 1);
   assert.equal(shaped.user_stories.includes("help with this problem"), false);
   assert.equal(/explicitly out/i.test(shaped.open_questions), false);
   assert.equal(stripHtml("<script>alert(1)</script><style>p{}</style><p>Hello &amp; notes</p>"), "Hello & notes");
@@ -105,11 +117,10 @@ function unit() {
   assert.equal(thin.createdPrd, false);
 
   const unsure = createSession();
-  demoTurn(unsure, "I don't know");
-  assert.equal(unsure.stageIndex, 0);
-  demoTurn(unsure, "I don't know");
+  demoTurn(unsure, "I'm not sure");
   assert.equal(unsure.stageIndex, 1);
-  assert.match(unsure.prd.sections.problem, /screen-time|check-in/);
+  assert.match(unsure.prd.sections.problem, /^Suggested:/);
+  assert.equal(/not sure/i.test(unsure.prd.sections.problem), false);
 
   const broad = createSession();
   demoTurn(broad, SAMPLE[0]);

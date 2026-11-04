@@ -120,7 +120,7 @@ export function formatScope(text) {
   if (!raw) return "";
   const labeled = raw.match(/\bin\s*:\s*([\s\S]*?)\s*\bout\s*:\s*([\s\S]*)/i);
   if (labeled) {
-    return `In:\n${bulletize(labeled[1])}\n\nOut:\n${bulletize(labeled[2])}`;
+    return `In:\n${bulletize(labeled[1])}\n\nOut:\n${bulletize(labeled[2], true)}`;
   }
   const inside = [];
   const outside = [];
@@ -136,13 +136,17 @@ export function formatScope(text) {
   if (!outside.length) {
     return `In:\n${bulletize(inside.join(", "))}\n\nOut:\n- Not specified yet. Shape will keep pushing for an explicit cut.`;
   }
-  return `In:\n${bulletize(inside.join(", "))}\n\nOut:\n${bulletize(outside.join(", "))}`;
+  return `In:\n${bulletize(inside.join(", "))}\n\nOut:\n${bulletize(outside.join(", "), true)}`;
 }
 
-function bulletize(text) {
+function bulletize(text, dropNo = false) {
   const parts = String(text || "")
     .split(/,|\n|·|•/)
-    .map((part) => part.replace(/^[-*]\s*/, "").replace(/^(and|or)\s+/i, "").replace(/\.$/, "").trim())
+    .map((part) => {
+      let item = part.replace(/^[-*]\s*/, "").replace(/^(and|or)\s+/i, "").replace(/\.$/, "").trim();
+      if (dropNo) item = item.replace(/^(no|not)\s+/i, "");
+      return item.trim();
+    })
     .filter(Boolean);
   if (!parts.length) return `- ${String(text || "").trim()}`;
   return parts.map((part) => `- ${part}`).join("\n");
@@ -189,6 +193,10 @@ export function executeTool(session, name, rawArgs = {}, meta = {}) {
   const source = meta.source || "runtime";
   const transport = meta.transport || "in-process";
   let result;
+
+  if (name === "create_prd" && session.createdPrd) {
+    return { entry: null, result: { ok: true, created: false, skipped: true, title: session.prd.title } };
+  }
 
   if (name === "create_prd") {
     const title = asContent(args.title);

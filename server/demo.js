@@ -93,22 +93,58 @@ export function cleanProse(text, maxSentences = 2) {
   return value;
 }
 
+export function rewriteProblem(text) {
+  const chunks = String(text || "").split(/\n\n(?=Current workaround:)/i);
+  let pain = chunks[0].replace(/\s+/g, " ").trim();
+  pain = pain.replace(/^i want to build\s+/i, "");
+  pain = pain.replace(/^i(?:'m| am) building\s+/i, "");
+  pain = pain.replace(/^(?:an |a )?(?:app|tool|product)\s+(?:that |which )?(?:helps |help )/i, "");
+  pain = pain.replace(/^i want\s+(?:an |a )?(?:app|tool|product)\s+(?:that |which )?(?:helps |help |for |to )/i, "");
+  pain = pain.replace(/^i want to\s+/i, "");
+  pain = pain.replace(/^parents to\s+/i, "Parents need to ");
+  if (/^parents\b/i.test(pain) && !/^parents need\b/i.test(pain)) {
+    pain = pain.replace(/^parents\b/i, "Parents");
+  }
+  pain = cleanProse(pain);
+  if (chunks.length < 2) return pain;
+  return `${pain}\n\n${chunks.slice(1).join("\n\n")}`;
+}
+
+export function personaPhrase(who) {
+  let person = String(who || "the primary user").split(/[.!?]/)[0].replace(/\s+/g, " ").trim();
+  if (!person) return "a primary user";
+  if (/^(a|an|the)\b/i.test(person)) return person.charAt(0).toLowerCase() + person.slice(1);
+  if (/s\b/i.test(person.split(" ")[0]) && /^parents\b/i.test(person)) return person.charAt(0).toLowerCase() + person.slice(1);
+  return `a ${person.charAt(0).toLowerCase()}${person.slice(1)}`;
+}
+
+export function rewriteStories(text, who) {
+  const person = personaPhrase(who);
+  const lines = String(text || "").split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const stories = lines.map((line) => {
+    if (/^suggested:/i.test(line)) return line;
+    let want = line.replace(/^as .+?,?\s+i want(?: to)?\s+/i, "").replace(/\.$/, "").trim();
+    want = want.replace(/^i want (?:an |a )?(?:app|tool|product) (?:that |to |for )?/i, "");
+    want = want.replace(/^(?:to )?build (?:an |a )?(?:app|tool|product) (?:that |to |for )?(?:helps |help )?/i, "");
+    want = want.replace(/^an app (?:that |to |for )?/i, "");
+    want = want.replace(/^helps\s+/i, "");
+    if (!want || isUnsure(want)) return "";
+    if (/\bso that\b/i.test(want)) return `As ${person}, I want ${want.charAt(0).toLowerCase()}${want.slice(1)}.`;
+    return `As ${person}, I want ${want.charAt(0).toLowerCase()}${want.slice(1)} so that the pain is smaller than it is today.`;
+  }).filter(Boolean);
+  return stories.join("\n\n");
+}
+
 function tidyStory(who, text) {
-  const person = asWho(who);
   const sentence = cleanProse(text, 1);
-  if (!sentence || sentence.length > 180) return "";
-  let goal = sentence.replace(/[.!?]$/, "");
-  if (/^i want to /i.test(goal)) goal = goal.replace(/^i want to /i, "to ");
-  else if (/^i want /i.test(goal)) goal = goal.replace(/^i want /i, "");
-  else goal = goal.charAt(0).toLowerCase() + goal.slice(1);
-  if (!goal) return "";
-  return `As ${person}, I want ${goal}.`;
+  if (!sentence || sentence.length > 180 || isUnsure(sentence)) return "";
+  return rewriteStories(sentence, who);
 }
 
 export function synthesize(session) {
   const answers = session.answers;
   const problemParts = [];
-  if (answers.problem) problemParts.push(cleanProse(answers.problem));
+  if (answers.problem) problemParts.push(rewriteProblem(answers.problem));
   if (answers.workaround) problemParts.push(`Current workaround: ${cleanProse(answers.workaround)}`);
 
   const who = answers.target_user || "the primary user";
@@ -167,8 +203,10 @@ function openQuestions(session) {
   return items.map((item) => `- ${item}`).join("\n");
 }
 
-function isUnsure(text) {
-  return /^(i don't know|i don’t know|i dont know|idk|not sure|unsure|no idea|whatever you think)\b/i.test(text);
+export function isUnsure(text) {
+  const value = String(text || "").trim().replace(/[.!?]+$/g, "").trim();
+  if (!value || value.length > 60) return false;
+  return /^(i'm not sure|i am not sure|im not sure|i don't know|i don’t know|i dont know|idk|not sure|unsure|no idea|you decide|whatever you think)(?:\b.*)?$/i.test(value);
 }
 
 function isSkip(text) {
@@ -290,18 +328,7 @@ export function demoTurn(session, rawText) {
   if (isSkip(answer)) {
     skipping = true;
   } else if (isUnsure(answer)) {
-    const key = `${stage.id}:unsure`;
-    if (once(session, key)) {
-      return conclude(session, {
-        say: `I'd answer it this way, unless you would say it differently. ${recommendFor(stage.id, session)}`,
-        recommended: recommendFor(stage.id, session),
-        pushback: true,
-        before,
-        modelEntry,
-        started,
-      });
-    }
-    answer = recommendFor(stage.id, session);
+    answer = `Suggested: ${recommendFor(stage.id, session)}`;
   } else if (stage.id === "target_user" && isEveryone(answer) && once(session, "everyone")) {
     return conclude(session, {
       say: "Everyone is not a user. Who feels this on a bad day, and what are they trying to get done?",

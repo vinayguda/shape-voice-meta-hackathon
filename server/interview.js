@@ -1,6 +1,6 @@
 import { forceDemo, maxTokens, metaKey, modelId } from "./env.js";
-import { cleanProse, demoTurn, recommendFor, synthesize } from "./demo.js";
-import { changedKeys, executeTool, MCP_TOOLS, pushLog, titleFrom, view } from "./prd.js";
+import { cleanProse, demoTurn, isUnsure, recommendFor, rewriteProblem, rewriteStories, synthesize } from "./demo.js";
+import { canonSection, changedKeys, executeTool, formatScope, MCP_TOOLS, pushLog, titleFrom, view } from "./prd.js";
 import { SECTION_IDS, STAGES } from "./stages.js";
 import { museChat, parseToolCalls, textContent, usageOf } from "./muse.js";
 
@@ -29,8 +29,9 @@ const SYSTEM_PROMPT = `You are Shape, a voice PM running grill-me: one question 
 If the developer message includes context, use it. Reference it explicitly ("Your notes say X — does that mean…?"). Do not treat context as decided scope until they confirm it.
 One short question, then wait. Use the user's words. Do not invent facts.
 In this SINGLE response, call the tools together. Do not wait for tool results.
-- create_prd on the first useful answer.
-- update_prd_section for the stage you are recording. Workaround goes in problem as "Current workaround:". Scope uses "In:" and "Out:". Stories are "As …, I want …".
+- create_prd only if no PRD exists yet. Do not call it again.
+- update_prd_section for the stage you are recording. Problem is third person about the pain, not "I want to build an app". Workaround goes in problem as "Current workaround:". Scope uses "In:" and "Out:" and Out items do not start with "No". Stories are "As a {target user}, I want … so that …", never "As the primary user" and never "I want to build an app".
+- If they say they are not sure, you decide, or no idea, write the recommended answer into that section prefixed with "Suggested:" and move on. Never write "I'm not sure."
 - commit_turn in the same response. say is one or two sentences and ends with the NEXT stage's question from the developer message. stage is that next stage id. interview_complete is true only after risks is saved.
 Never ask about a stage that is already filled. If they are revising after the interview is done, update that section and confirm. No second question.`;
 
@@ -159,9 +160,44 @@ export function decideAdvance({ stageIndex, written }) {
   return { stageIndex: next, complete: false, stayed: false };
 }
 
+function turnTokens(session) {
+  const stage = STAGES[session.stageIndex];
+  if (session.complete || !stage || stage.id === "risks") return Math.max(maxTokens(), 2500);
+  return maxTokens();
+}
+
+function suggestedAnswer(session, stageId) {
+  return `Suggested: ${recommendFor(stageId, session)}`;
+}
+
+function polishUpdate(session, args) {
+  const section = canonSection(args.section);
+  let content = String(args.content || "");
+  if (isUnsure(content)) content = suggestedAnswer(session, STAGES[session.stageIndex]?.id || "problem");
+  if (section === "problem") content = rewriteProblem(content);
+  if (section === "user_stories") {
+    content = rewriteStories(content, session.answers.target_user || session.prd.sections.target_user);
+  }
+  if (section === "mvp_scope") content = formatScope(content);
+  return { ...args, content };
+}
+
 function ensureStageWritten(session, stage, text, before) {
   if (!stage || stageSectionWritten(session, stage.id, before)) return;
-  const prose = cleanProse(text);
+  if (isUnsure(text)) {
+    const content = suggestedAnswer(session, stage.id);
+    const meta = { source: "fallback", transport: "in-process" };
+    const section = stage.id === "workflow" ? "user_stories" : stage.id === "workaround" ? "problem" : stage.id;
+    if (stage.id === "problem" && !session.createdPrd) {
+      executeTool(session, "create_prd", { title: titleFrom(content), problem: content }, meta);
+    }
+    const written = stage.id === "mvp_scope" ? formatScope(content) : stage.id === "workaround"
+      ? `${(session.prd.sections.problem || "").trim()}\n\nCurrent workaround: ${content}`.trim()
+      : content;
+    executeTool(session, "update_prd_section", { section, content: written, mode: "replace" }, meta);
+    return;
+  }
+  const prose = stage.id === "problem" ? rewriteProblem(text) : cleanProse(text);
   if (prose.length < 12) return;
   const meta = { source: "fallback", transport: "in-process" };
   if (stage.id === "problem") {
@@ -259,7 +295,8 @@ async function runLive(session, text) {
   let usedModel = configured;
   const started = Date.now();
 
-  const data = await museChat({ messages, tools, maxTokens: maxTokens() });
+  const cap = turnTokens(session);
+  const data = await museChat({ messages, tools, maxTokens: cap });
   const choice = data.choices?.[0];
   if (!choice) {
     const error = new Error("Muse returned no choices.");
@@ -281,7 +318,7 @@ async function runLive(session, text) {
     via: "model",
     transport: "none",
     source: usedModel,
-    args: { model: usedModel, max_tokens: maxTokens() },
+    args: { model: usedModel, max_tokens: cap },
     summary: [
       usedModel,
       `${latencyMs}ms`,
@@ -315,6 +352,8 @@ async function runLive(session, text) {
         });
         continue;
       }
+      if (call.name === "create_prd" && session.createdPrd) continue;
+      if (call.name === "update_prd_section") call.args = polishUpdate(session, call.args);
       if (call.name === "commit_turn") {
         committed = call.args;
         spoken = speakable(call.args.say) || spoken;
@@ -342,7 +381,7 @@ async function runLive(session, text) {
   const written = oldStage ? stageSectionWritten(session, oldStage.id, before) : false;
   const progress = applyProgress(session, written, oldIndex);
   if (progress.stayed === false && oldStage && !session.answers[oldStage.id]) {
-    session.answers[oldStage.id] = cleanProse(text);
+    session.answers[oldStage.id] = isUnsure(text) ? suggestedAnswer(session, oldStage.id) : cleanProse(text);
   }
   const usedFallback = !progress.stayed ? fillGaps(session) : false;
   const modelSay = spoken;
