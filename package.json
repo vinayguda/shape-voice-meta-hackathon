@@ -1,0 +1,16 @@
+{
+  "name": "shape",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Talk your idea. Get a PRD. A voice interview that writes a PRD live, using Meta Muse.",
+  "scripts": {
+    "dev": "node server/index.js",
+    "start": "node server/index.js",
+    "check": "node scripts/walkthrough.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
