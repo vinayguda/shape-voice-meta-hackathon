@@ -3,9 +3,28 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { demoTurn, looksBloated, SAMPLE } from "../server/demo.js";
+import { sttEngine } from "../server/env.js";
 import { routeFor } from "../server/interview.js";
-import { shouldDropReasoningEffort } from "../server/muse.js";
+import { shouldDropReasoningEffort, transcribeRequest, wavIs16kMono } from "../server/muse.js";
 import { createSession, formatScope, titleFrom, toMarkdown } from "../server/prd.js";
+
+function wavHeader(rate, channels, bits) {
+  const bytes = Buffer.alloc(44);
+  bytes.write("RIFF", 0);
+  bytes.writeUInt32LE(36, 4);
+  bytes.write("WAVE", 8);
+  bytes.write("fmt ", 12);
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(channels, 22);
+  bytes.writeUInt32LE(rate, 24);
+  bytes.writeUInt32LE((rate * channels * bits) / 8, 28);
+  bytes.writeUInt16LE((channels * bits) / 8, 32);
+  bytes.writeUInt16LE(bits, 34);
+  bytes.write("data", 36);
+  bytes.writeUInt32LE(0, 40);
+  return bytes;
+}
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const port = 3099;
@@ -27,6 +46,18 @@ function unit() {
   assert.equal(routeFor(true), "demo");
   delete process.env.DEMO;
   assert.equal(routeFor(true), "live");
+  delete process.env.META_STT;
+  assert.equal(sttEngine(), "muse");
+  process.env.META_STT = "browser";
+  assert.equal(sttEngine(), "browser");
+  delete process.env.META_STT;
+  delete process.env.META_API_KEY;
+  assert.equal(sttEngine(), "browser");
+  const request = transcribeRequest();
+  assert.deepEqual(request, { model: "muse-voice-transcribe-1.0", audioEncoding: "WAV", sampleRateHertz: 16000 });
+  assert.equal(wavIs16kMono(wavHeader(16000, 1, 16)), true);
+  assert.equal(wavIs16kMono(wavHeader(44100, 1, 16)), false);
+  assert.equal(wavIs16kMono(wavHeader(16000, 2, 16)), false);
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -160,8 +191,11 @@ async function http() {
   assert.equal(health.museConfigured, false);
   assert.equal(health.theme, "Build for Your World");
   assert.equal(health.track, "Indie Developer");
-  assert.equal(health.stt.museOptional, false);
-  assert.equal(health.stt.provider, "browser-web-speech");
+  assert.equal(health.stt.engine, "browser");
+  assert.equal(health.stt.model, "muse-voice-transcribe-1.0");
+  assert.equal(health.stt.audioEncoding, "WAV");
+  assert.equal(health.stt.sampleRateHertz, 16000);
+  assert.equal(health.stt.browserFallback, true);
 
   const html = await fetch(`${base}/`).then((response) => response.text());
   assert.match(html, /Build for Your World/);
@@ -212,7 +246,7 @@ async function http() {
   const wav = Buffer.alloc(64).toString("base64");
   const stt = await post("/api/transcribe", { wavBase64: wav });
   assert.equal(stt.status, 400);
-  assert.equal(stt.json.code, "stt_disabled");
+  assert.equal(stt.json.code, "no_key");
 
   const init = await post("/mcp", {
     jsonrpc: "2.0",

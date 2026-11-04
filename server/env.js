@@ -38,8 +38,17 @@ export function maxTokens() {
   return Math.floor(n);
 }
 
-export function sttEnabled() {
-  return process.env.META_STT === "1";
+export function sttModel() {
+  return (process.env.META_STT_MODEL || "muse-voice-transcribe-1.0").trim();
+}
+
+// Muse Voice Transcribe is the mic whenever a key is set.
+// META_STT=browser forces the Web Speech API even if a key is present.
+// With no key, the browser path is the only one that can run.
+export function sttEngine() {
+  if ((process.env.META_STT || "").trim().toLowerCase() === "browser") return "browser";
+  if (!metaKey()) return "browser";
+  return "muse";
 }
 
 export function forceDemo() {

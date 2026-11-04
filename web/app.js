@@ -17,7 +17,8 @@ const demoBtn = $("mode-demo");
 const liveBtn = $("mode-live");
 const voiceBox = $("voice");
 const sttLabel = $("stt-label");
-const sttEngine = $("stt-engine");
+const sttBrowser = $("stt-browser");
+const micEngine = $("mic-engine");
 
 let health = { model: "muse-spark-1.3", museConfigured: false, forceDemo: false, stt: {} };
 let state = null;
@@ -180,7 +181,7 @@ function renderLog() {
   if (!entries.length) {
     const empty = document.createElement("p");
     empty.className = "empty-log";
-    empty.textContent = "PRD tools land here. In Live mode, muse-spark calls them. The same three tools are served at POST /mcp.";
+    empty.textContent = "PRD tools land here, and each mic clip logs muse-voice-transcribe-1.0. The same PRD tools are served at POST /mcp.";
     log.append(empty);
     return;
   }
@@ -286,13 +287,17 @@ function cancelMic() {
   if (recordStream) recordStream.getTracks().forEach((track) => track.stop());
 }
 
+function useMuseMic() {
+  return health.stt?.engine === "muse" && !sttBrowser.checked;
+}
+
 function toggleMic() {
   if (listening) {
     if (recorder && recorder.state === "recording") recorder.stop();
     else if (recognition) recognition.stop();
     return;
   }
-  if (sttEngine.value === "muse" && !sttLabel.hidden) {
+  if (useMuseMic()) {
     startMuseRec().catch((error) => showBanner(error.message || "Could not record audio."));
     return;
   }
@@ -340,18 +345,23 @@ function toggleMic() {
 }
 
 async function startMuseRec() {
+  window.speechSynthesis?.cancel();
   recordStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const chunks = [];
   recorder = new MediaRecorder(recordStream);
   listening = true;
   micBtn.classList.add("listening");
+  micBtn.setAttribute("aria-pressed", "true");
   micBtn.textContent = "Stop";
   recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
   recorder.onstop = async () => {
     listening = false;
     micBtn.classList.remove("listening");
+    micBtn.setAttribute("aria-pressed", "false");
     micBtn.textContent = "Mic";
     recordStream.getTracks().forEach((track) => track.stop());
+    setBusy(true);
+    statusEl.textContent = "Transcribing with muse-voice-transcribe-1.0…";
     try {
       const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
       const wav = await blobToWav(blob);
@@ -359,17 +369,23 @@ async function startMuseRec() {
       const response = await fetch("/api/transcribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wavBase64 }),
+        body: JSON.stringify({ wavBase64, sessionId: state?.sessionId }),
       });
       const data = await response.json();
+      if (data.toolLog && state) {
+        state.toolLog = data.toolLog;
+        renderLog();
+      }
       if (!response.ok) {
-        showBanner(data.error || "Transcription failed.");
+        showBanner(`${data.error || "Transcription failed."} Check Browser speech fallback, or set META_STT=browser.`);
         return;
       }
       interimEl.textContent = data.text;
       await sendText(data.text);
     } catch (error) {
       showBanner(error.message || "Could not transcribe that clip.");
+    } finally {
+      setBusy(false);
     }
   };
   recorder.start();
@@ -520,7 +536,12 @@ async function boot() {
     showBanner("Can't reach the Shape server.");
     return;
   }
-  if (health.stt?.museOptional) sttLabel.hidden = false;
+  const museMic = health.stt?.engine === "muse";
+  sttLabel.hidden = !museMic;
+  sttBrowser.checked = false;
+  micEngine.textContent = museMic
+    ? "Mic: push to talk, then muse-voice-transcribe-1.0."
+    : "Mic: browser speech until META_API_KEY is set. Live mic uses muse-voice-transcribe-1.0.";
   if (health.forceDemo) liveBtn.disabled = true;
   setMode(!health.forceDemo && health.museConfigured);
   await startSession(runToken);

@@ -42,7 +42,7 @@ make dev               # toggle Live Muse in the header
 | Theme | Build for Your World |
 | Window | October 26–November 4, 2026 |
 | Entrant | Vinay Guda (solo) |
-| Models | `muse-spark-1.3` on every live turn. `muse-voice-transcribe-1.0` only if `META_STT=1` |
+| Models | `muse-spark-1.3` on every live turn. `muse-voice-transcribe-1.0` on every mic clip when a key is set. |
 
 Shape is for the builder who can explain an idea out loud and still walks into a blank doc. The interview asks the questions that usually get skipped, and the canvas is the spec at the end of the conversation.
 
@@ -53,11 +53,13 @@ Base URL `https://api.meta.ai/v1`. Auth `Authorization: Bearer $META_API_KEY`. C
 | Model id | Job | Where |
 |---|---|---|
 | `muse-spark-1.3` (override with `META_MODEL`) | Interview, follow-ups, pushback, slot extraction, PRD drafting, tool calls | `server/muse.js` `museChat` → `POST /v1/chat/completions`, called from `server/interview.js` on every **Live** user turn |
-| `muse-voice-transcribe-1.0` | Optional speech-to-text | `server/muse.js` `transcribeWav` → `POST /v1/asr/transcribe`, only when `META_STT=1` |
+| `muse-voice-transcribe-1.0` | Speech-to-text for the mic | `server/muse.js` `transcribeWav` → `POST /v1/asr/transcribe`. 16 kHz mono WAV. `audioEncoding` is `WAV`. |
 
 Muse Spark is a reasoning model. Reasoning tokens count against `max_tokens`. A cap of 20 comes back as `content: null` and `finish_reason=length`, so the default cap is **4000** (`META_MAX_TOKENS`). Shape sends `reasoning_effort=low` unless `META_REASONING_EFFORT=off`. If that field returns HTTP 400, the next attempt drops it for the rest of the process. Turns are not streamed: the spoken line is ready only after the tool calls, and the thinking time is already most of the 1.5–3s.
 
-`POST /v1/audio/transcriptions` returns 404 on this API. The documented transcribe route is `POST /v1/asr/transcribe`. It stays behind `META_STT=1` because that path was not re-verified against a live key here. The mic that the demo uses is the browser Web Speech API. Meta does not ship a text-to-speech model on this API (`Muse Voice Transcribe` is speech-to-text only), so replies are spoken with `speechSynthesis`.
+The mic is push-to-talk. The browser records a clip, resamples it to 16 kHz mono WAV, and Shape posts it to `POST /v1/asr/transcribe`. That call is verified: HTTP 200, transcript in `transcript`, about 1–2 seconds for a 4 second clip. The JSON part must be exactly `{"model":"muse-voice-transcribe-1.0","audioEncoding":"WAV","sampleRateHertz":16000}`. `audioEncoding` is case-sensitive (`wav`, `LINEAR16`, and `PCM_S16LE` return 400). `POST /v1/audio/transcriptions` returns 404, and the realtime WebSocket is not used. Each clip is a row in the tool log (`asr/transcribe`).
+
+`META_STT=browser` forces the Web Speech API instead. With no API key the mic uses that same browser fallback so Demo mode still runs. Meta does not ship text-to-speech here, so replies use `speechSynthesis`.
 
 The header pill and the tool log show the model id, latency, and reasoning-token count on live turns.
 
@@ -66,8 +68,9 @@ The header pill and the tool log show the model id, latency, and reasoning-token
 ```mermaid
 flowchart LR
   person[Person] --> browser[Browser]
-  browser -->|"Web Speech API or typed text"| turn["Shape /api/turn"]
-  browser -->|"WAV only if META_STT=1"| stt["muse-voice-transcribe-1.0\nPOST /v1/asr/transcribe"]
+  browser -->|"16 kHz mono WAV"| stt["muse-voice-transcribe-1.0\nPOST /v1/asr/transcribe"]
+  stt --> turn["Shape /api/turn"]
+  browser -->|"typed text, or META_STT=browser"| turn
   turn -->|"Live mode"| spark["muse-spark-1.3\nPOST /v1/chat/completions"]
   spark -->|tool calls| tools["create_prd\nupdate_prd_section\nexport_prd"]
   tools --> canvas[PRD canvas]
@@ -97,7 +100,7 @@ curl -s http://localhost:3000/mcp \
 
 ### Voice choice
 
-LiveKit Agents would work, and the earlier Voice Agent Studio project was built that way. This repo does not copy that code. For a one-command demo with the fewest keys, Shape uses the browser: Web Speech API in, `speechSynthesis` out, and a single Node server. Use headphones so the reply does not walk back into the mic. Typing and **Play sample idea** cover a machine with no microphone.
+LiveKit Agents would work, and the earlier Voice Agent Studio project was built that way. This repo does not copy that code. Shape stays one Node process: the browser records, Muse Voice Transcribe transcribes, Muse Spark interviews, and `speechSynthesis` speaks. Use headphones so the reply does not walk back into the mic. Typing and **Play sample idea** cover a machine with no microphone. Set `META_STT=browser` if you want the Web Speech API instead of Muse.
 
 ## Inspiration
 
@@ -127,7 +130,8 @@ See `.env.example`. The names that matter:
 | `META_MODEL` | `muse-spark-1.3` |
 | `META_MAX_TOKENS` | Default 4000. Do not set this near 20. |
 | `META_REASONING_EFFORT` | Default `low`. `off` disables it. |
-| `META_STT` | `1` turns on Muse Voice Transcribe. Off by default. |
+| `META_STT` | Unset uses Muse Voice Transcribe when a key is set. `browser` forces the Web Speech API. |
+| `META_STT_MODEL` | Default `muse-voice-transcribe-1.0`. |
 | `DEMO` | `1` forces the canned interview even if a key is set. |
 
 The browser never sees the key. `/api/health` reports only whether a key is present.

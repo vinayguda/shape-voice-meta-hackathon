@@ -1,4 +1,4 @@
-import { baseUrl, maxTokens, metaKey, modelId } from "./env.js";
+import { baseUrl, maxTokens, metaKey, modelId, sttModel } from "./env.js";
 
 export class MuseError extends Error {
   constructor(message, { status = 502, code = "muse_error" } = {}) {
@@ -153,22 +153,37 @@ function pullTranscript(payload) {
   return "";
 }
 
+// Verified request. audioEncoding is case-sensitive: "WAV" works, "wav" does not.
+// sampleRateHertz must be 16000. Do not send LINEAR16 or PCM_S16LE.
+export function transcribeRequest(model = sttModel()) {
+  return { model, audioEncoding: "WAV", sampleRateHertz: 16000 };
+}
+
+export function wavIs16kMono(buffer) {
+  if (!buffer || buffer.length < 44) return false;
+  if (buffer.toString("ascii", 0, 4) !== "RIFF") return false;
+  if (buffer.toString("ascii", 8, 12) !== "WAVE") return false;
+  const audioFormat = buffer.readUInt16LE(20);
+  const channels = buffer.readUInt16LE(22);
+  const rate = buffer.readUInt32LE(24);
+  const bits = buffer.readUInt16LE(34);
+  return audioFormat === 1 && channels === 1 && rate === 16000 && bits === 16;
+}
+
 export async function transcribeWav(wavBuffer) {
-  if (process.env.META_STT !== "1") {
+  if (!metaKey()) {
     throw new MuseError(
-      "Muse Voice Transcribe is off. The mic uses the browser Web Speech API. Set META_STT=1 to send WAV to POST /v1/asr/transcribe (muse-voice-transcribe-1.0). POST /v1/audio/transcriptions returns 404 on this API.",
-      { status: 400, code: "stt_disabled" },
+      "META_API_KEY is not set, so Muse Voice Transcribe cannot run. Set META_STT=browser to use the Web Speech API.",
+      { status: 400, code: "no_key" },
     );
   }
-  if (!metaKey()) {
-    throw new MuseError("META_API_KEY is not set, so Muse Voice Transcribe cannot run.", { status: 400, code: "no_key" });
+  if (!wavIs16kMono(wavBuffer)) {
+    throw new MuseError("Audio must be 16 kHz mono 16-bit WAV.", { status: 400, code: "bad_wav" });
   }
-  const model = process.env.META_STT_MODEL || "muse-voice-transcribe-1.0";
+  const request = transcribeRequest();
+  const model = request.model;
   const form = new FormData();
-  form.append(
-    "request",
-    new Blob([JSON.stringify({ model, audioEncoding: "WAV", mode: "PUSH_TO_TALK" })], { type: "application/json" }),
-  );
+  form.append("request", new Blob([JSON.stringify(request)], { type: "application/json" }));
   form.append("audio", new Blob([wavBuffer], { type: "audio/wav" }), "turn.wav");
   const started = Date.now();
   const response = await fetch(`${baseUrl()}/asr/transcribe`, {
@@ -195,5 +210,10 @@ export async function transcribeWav(wavBuffer) {
   if (!transcript) {
     throw new MuseError("Muse Voice Transcribe returned no transcript.", { status: 502, code: "stt_empty" });
   }
-  return { text: transcript, model };
+  return {
+    text: transcript,
+    model,
+    latencyMs: Date.now() - started,
+    audioDurationMs: data.audioDurationMs ?? null,
+  };
 }

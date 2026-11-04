@@ -2,12 +2,12 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv, baseUrl, forceDemo, maxTokens, metaKey, modelId, sttEnabled } from "./env.js";
+import { loadEnv, baseUrl, forceDemo, maxTokens, metaKey, modelId, sttEngine, sttModel } from "./env.js";
 import { SAMPLE } from "./demo.js";
 import { takeTurn } from "./interview.js";
 import { handleMcp } from "./mcp.js";
 import { transcribeWav } from "./muse.js";
-import { createSession, executeTool, sessions, slugify, toMarkdown, view } from "./prd.js";
+import { createSession, executeTool, pushLog, sessions, slugify, toMarkdown, view } from "./prd.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadEnv(path.join(root, ".env"));
@@ -85,14 +85,19 @@ function health() {
     maxTokens: maxTokens(),
     reasoningEffort: process.env.META_REASONING_EFFORT || "low",
     stt: {
-      provider: "browser-web-speech",
-      museOptional: sttEnabled(),
-      museModel: process.env.META_STT_MODEL || "muse-voice-transcribe-1.0",
-      museEndpoint: "/asr/transcribe",
-      note: "The browser Web Speech API is the microphone. META_STT=1 tries Muse Voice Transcribe at POST /v1/asr/transcribe. POST /v1/audio/transcriptions returns 404. Meta has no TTS model; the browser speaks.",
+      engine: sttEngine(),
+      model: sttModel(),
+      endpoint: "/asr/transcribe",
+      audioEncoding: "WAV",
+      sampleRateHertz: 16000,
+      browserFallback: sttEngine() === "browser",
+      note:
+        sttEngine() === "muse"
+          ? "The mic records a push-to-talk clip and sends 16 kHz mono WAV to muse-voice-transcribe-1.0. META_STT=browser switches the mic to the Web Speech API."
+          : "The mic is the browser Web Speech API because META_STT=browser or no API key is set. With META_API_KEY, the mic uses muse-voice-transcribe-1.0.",
     },
     mcp: "/mcp",
-    voice: "Browser Web Speech API in, speechSynthesis out. One Node process.",
+    voice: "Muse Voice Transcribe in, speechSynthesis out. Browser speech is the fallback.",
   };
 }
 
@@ -198,8 +203,36 @@ async function handle(req, res) {
     const body = await readJson(req, 20_000_000);
     const wav = Buffer.from(body.wavBase64 || "", "base64");
     if (wav.length < 44) return sendJson(res, 400, { error: "Audio was empty.", code: "empty_audio" });
-    const out = await transcribeWav(wav);
-    sendJson(res, 200, out);
+    const session = body.sessionId ? sessions.get(body.sessionId) : null;
+    try {
+      const out = await transcribeWav(wav);
+      if (session) {
+        pushLog(session, {
+          name: "asr/transcribe",
+          via: "model",
+          transport: "none",
+          source: out.model,
+          args: { model: out.model, audioEncoding: "WAV", sampleRateHertz: 16000 },
+          summary: `${out.model} · ${out.latencyMs}ms · ${out.text}`,
+          result: { live: true, latencyMs: out.latencyMs, audioDurationMs: out.audioDurationMs },
+        });
+      }
+      sendJson(res, 200, { ...out, toolLog: session ? session.toolLog : undefined });
+    } catch (error) {
+      if (session) {
+        pushLog(session, {
+          name: "asr/transcribe",
+          via: "model",
+          transport: "none",
+          source: sttModel(),
+          ok: false,
+          args: { model: sttModel(), audioEncoding: "WAV", sampleRateHertz: 16000 },
+          summary: error.message,
+        });
+      }
+      error.toolLog = session ? session.toolLog : undefined;
+      throw error;
+    }
     return;
   }
 
@@ -248,7 +281,9 @@ const server = http.createServer((req, res) => {
     if (status >= 500) console.error("[shape]", error);
     else console.error("[shape]", error.code || status, error.message);
     if (!res.headersSent) {
-      sendJson(res, status, { error: error.message || "Internal error.", code: error.code || "error" });
+      const body = { error: error.message || "Internal error.", code: error.code || "error" };
+      if (error.toolLog) body.toolLog = error.toolLog;
+      sendJson(res, status, body);
     } else {
       res.end();
     }
@@ -267,7 +302,9 @@ if (isMain) {
     console.log(`MCP    http://localhost:${port}/mcp`);
     console.log(`model  ${modelId()}  key ${key}  max_tokens ${maxTokens()}`);
     console.log(
-      `stt    browser Web Speech API${sttEnabled() ? " + muse-voice-transcribe-1.0 at /asr/transcribe" : "  (META_STT=1 tries Muse Voice Transcribe)"}`,
+      sttEngine() === "muse"
+        ? `stt    ${sttModel()}  POST /v1/asr/transcribe  16 kHz mono WAV`
+        : `stt    browser Web Speech API  (set a META_API_KEY for ${sttModel()}; META_STT=browser keeps this fallback)`,
     );
     if (!metaKey() || forceDemo()) console.log("demo   ready — the UI runs with no API key");
   });

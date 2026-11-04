@@ -52,16 +52,14 @@
             </div>
             <p id="interim" class="interim"></p>
             <p class="hint">Enter to send. Shift+Enter for a new line. Use headphones so the reply does not go back into the mic.</p>
+            <p id="mic-engine" class="hint"></p>
             <label class="voice-toggle">
               <input id="voice" type="checkbox" checked />
               Speak replies
             </label>
             <label id="stt-label" class="voice-toggle" hidden>
-              Speech engine
-              <select id="stt-engine">
-                <option value="browser">Browser</option>
-                <option value="muse">Muse Voice Transcribe</option>
-              </select>
+              <input id="stt-browser" type="checkbox" />
+              Browser speech fallback
             </label>
           </form>
         </section>
