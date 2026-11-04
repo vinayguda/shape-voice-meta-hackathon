@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shape — Talk your idea. Get a PRD.</title>
+    <meta name="description" content="Shape interviews you by voice, one question at a time, and writes the PRD on screen." />
+    <meta name="theme-color" content="#12140f" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <span class="mark" aria-hidden="true">S</span>
+          <div>
+            <strong>Shape</strong>
+            <em>Talk your idea. Get a PRD.</em>
+          </div>
+        </div>
+        <p class="theme">Indie Developer · Build for Your World</p>
+        <div class="top-actions">
+          <span id="model-pill" class="pill">muse-spark-1.3</span>
+          <div class="seg" role="group" aria-label="Model mode">
+            <button id="mode-demo" type="button" aria-pressed="true">Demo</button>
+            <button id="mode-live" type="button" aria-pressed="false">Live Muse</button>
+          </div>
+          <button id="sample" type="button" class="ghost">Play sample idea</button>
+          <button id="reset" type="button" class="ghost">New</button>
+        </div>
+      </header>
+
+      <p id="banner" class="banner" role="alert" hidden></p>
+
+      <main class="main">
+        <section class="col-left" aria-label="Interview">
+          <ol id="stage-rail" class="rail"></ol>
+          <article id="question-card">
+            <p id="question-kicker">Question 1 of 7</p>
+            <p id="question" aria-live="polite">Starting the interview…</p>
+            <button id="speak" type="button">Play aloud</button>
+          </article>
+          <button id="recommended" type="button" hidden></button>
+          <div id="transcript" class="transcript" aria-label="Transcript"></div>
+          <form id="composer-form" class="composer" autocomplete="off">
+            <label class="sr" for="composer">Your answer</label>
+            <textarea id="composer" rows="2" placeholder="Speak, or type the answer"></textarea>
+            <div class="composer-actions">
+              <button id="mic" type="button" aria-pressed="false">Mic</button>
+              <button id="send" type="submit">Send</button>
+            </div>
+            <p id="interim" class="interim"></p>
+            <p class="hint">Enter to send. Shift+Enter for a new line. Use headphones so the reply does not go back into the mic.</p>
+            <label class="voice-toggle">
+              <input id="voice" type="checkbox" checked />
+              Speak replies
+            </label>
+            <label id="stt-label" class="voice-toggle" hidden>
+              Speech engine
+              <select id="stt-engine">
+                <option value="browser">Browser</option>
+                <option value="muse">Muse Voice Transcribe</option>
+              </select>
+            </label>
+          </form>
+        </section>
+
+        <section class="prd-wrap" aria-label="PRD">
+          <article class="sheet">
+            <header class="sheet-head">
+              <div>
+                <p class="eyebrow">Live PRD</p>
+                <h1 id="prd-title">Untitled PRD</h1>
+              </div>
+              <div class="sheet-actions">
+                <span id="prd-filled" class="count">0 / 7 sections</span>
+                <span id="prd-status" class="status">Draft</span>
+                <button id="download" type="button">Download .md</button>
+              </div>
+            </header>
+            <div id="prd-sections"></div>
+          </article>
+        </section>
+      </main>
+
+      <footer class="log">
+        <div class="log-head">
+          <h2>Tool calls</h2>
+          <span id="tool-count">0</span>
+          <p id="status">Demo · canned interview, no API call.</p>
+        </div>
+        <div id="tool-log" aria-label="Tool call log"></div>
+      </footer>
+    </div>
+    <script src="app.js"></script>
+    <noscript>Shape needs JavaScript.</noscript>
+  </body>
+</html>
