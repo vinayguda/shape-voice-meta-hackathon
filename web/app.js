@@ -64,6 +64,7 @@ function setMode(next) {
   demoBtn.setAttribute("aria-pressed", String(!live));
   liveBtn.setAttribute("aria-pressed", String(live));
   modelPill.textContent = live && health.museConfigured ? health.model : live ? `${health.model} · no key` : `${health.model} · demo`;
+  renderMicEngine();
   renderStatus();
 }
 
@@ -313,7 +314,15 @@ function cancelMic() {
 }
 
 function useMuseMic() {
-  return health.stt?.engine === "muse" && !sttBrowser.checked;
+  return live && health.stt?.engine === "muse" && !sttBrowser.checked;
+}
+
+function renderMicEngine() {
+  const museMic = useMuseMic();
+  sttLabel.hidden = !(live && health.stt?.engine === "muse");
+  micEngine.textContent = museMic
+    ? "Mic: push to talk, then muse-voice-transcribe-1.0."
+    : "Mic: browser speech. Demo mode does not call Meta. Live uses Muse Voice Transcribe when a key is set.";
 }
 
 function toggleMic() {
@@ -610,12 +619,7 @@ async function boot() {
     showBanner("Can't reach the Shape server.");
     return;
   }
-  const museMic = health.stt?.engine === "muse";
-  sttLabel.hidden = !museMic;
   sttBrowser.checked = false;
-  micEngine.textContent = museMic
-    ? "Mic: push to talk, then muse-voice-transcribe-1.0."
-    : "Mic: browser speech until META_API_KEY is set. Live mic uses muse-voice-transcribe-1.0.";
   if (health.forceDemo) liveBtn.disabled = true;
   setMode(!health.forceDemo && health.museConfigured);
   await startSession(runToken);
