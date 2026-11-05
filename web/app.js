@@ -19,6 +19,8 @@ const voiceBox = $("voice");
 const sttLabel = $("stt-label");
 const sttBrowser = $("stt-browser");
 const micEngine = $("mic-engine");
+const voiceAgentBtn = $("voice-agent");
+const voiceStateEl = $("voice-state");
 
 let health = { model: "muse-spark-1.3", museConfigured: false, forceDemo: false, stt: {} };
 let fillerAt = 0;
@@ -32,6 +34,11 @@ let listening = false;
 let recToken = 0;
 let recorder = null;
 let recordStream = null;
+let voiceAgentOn = false;
+let voiceConnecting = false;
+let voiceRoom = null;
+let voicePoll = 0;
+let voicePhase = "";
 
 function showBanner(message) {
   banner.hidden = false;
@@ -64,12 +71,17 @@ function setMode(next) {
   demoBtn.setAttribute("aria-pressed", String(!live));
   liveBtn.setAttribute("aria-pressed", String(live));
   modelPill.textContent = live && health.museConfigured ? health.model : live ? `${health.model} · no key` : `${health.model} · demo`;
+  publishVoiceMode();
   renderMicEngine();
   renderStatus();
 }
 
 function renderStatus() {
   if (!state) return;
+  if (voiceAgentOn && voicePhase) {
+    statusEl.textContent = voiceStateEl.textContent || `Voice agent · ${voicePhase}`;
+    return;
+  }
   if (busy) {
     statusEl.textContent = live ? `Thinking… ${health.model}` : "Updating the PRD…";
     return;
@@ -282,7 +294,7 @@ function speakFiller() {
 }
 
 function speak(text) {
-  if (!voiceOn || !text || !window.speechSynthesis) return;
+  if (voiceAgentOn || !voiceOn || !text || !window.speechSynthesis) return;
   try {
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
@@ -548,6 +560,7 @@ async function submitContext() {
 }
 
 async function playSample() {
+  if (voiceAgentOn || voiceConnecting) await stopVoiceAgent();
   if (live && !health.museConfigured) {
     showBanner("The sample can run in Demo with no key. Live mode needs META_API_KEY.");
     return;
@@ -573,6 +586,226 @@ async function playSample() {
   if (token === runToken && voiceOn && state) speak(state.spoken || state.question);
 }
 
+const VOICE_LABELS = {
+  initializing: "Connecting",
+  connecting: "Connecting",
+  listening: "Listening",
+  thinking: "Thinking",
+  speaking: "Speaking",
+};
+
+function setVoicePhase(next) {
+  voicePhase = next || "";
+  if (!voiceStateEl) return;
+  if (!voiceAgentOn || !voicePhase) {
+    voiceStateEl.hidden = true;
+    voiceStateEl.textContent = "";
+    voiceStateEl.dataset.state = "";
+    if (!busy) card.classList.remove("thinking");
+    const thinking = $("thinking");
+    if (thinking && !busy) thinking.hidden = true;
+    renderStatus();
+    return;
+  }
+  const label = VOICE_LABELS[voicePhase] || voicePhase;
+  voiceStateEl.hidden = false;
+  voiceStateEl.dataset.state = voicePhase;
+  voiceStateEl.textContent = `Voice agent · ${label}`;
+  const thinkingNow = voicePhase === "thinking";
+  card.classList.toggle("thinking", thinkingNow);
+  const thinking = $("thinking");
+  if (thinking) {
+    thinking.hidden = !thinkingNow;
+    thinking.textContent = `Thinking… ${health.model || "muse-spark-1.3"}`;
+  }
+  renderStatus();
+}
+
+function setVoiceControls(active) {
+  voiceAgentOn = active;
+  if (!voiceAgentBtn) return;
+  voiceAgentBtn.classList.toggle("on", active);
+  voiceAgentBtn.setAttribute("aria-pressed", String(active));
+  voiceAgentBtn.textContent = active ? "Stop voice" : "Voice agent";
+  micBtn.disabled = active;
+  sendBtn.disabled = active || busy;
+  composer.disabled = active;
+  recommendBtn.disabled = active;
+}
+
+function loadLiveKit() {
+  if (window.LivekitClient) return Promise.resolve(window.LivekitClient);
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/vendor/livekit-client.umd.js";
+    script.onload = () => (window.LivekitClient ? resolve(window.LivekitClient) : reject(new Error("LiveKit client did not load.")));
+    script.onerror = () => reject(new Error("Could not load the LiveKit browser client."));
+    document.head.append(script);
+  });
+}
+
+function publishVoiceMode() {
+  if (!voiceRoom || !voiceAgentOn) return;
+  const payload = new TextEncoder().encode(JSON.stringify({ type: "mode", live }));
+  voiceRoom.localParticipant?.publishData(payload, { reliable: true, topic: "shape" }).catch(() => {});
+}
+
+function detachVoiceAudio() {
+  document.querySelectorAll("audio[data-shape-voice]").forEach((element) => element.remove());
+}
+
+async function refreshVoiceSession() {
+  if (!voiceAgentOn || !state) return;
+  const response = await fetch(`/api/session/${state.sessionId}`);
+  const data = await response.json();
+  if (!voiceAgentOn || !response.ok) return;
+  const previous = state;
+  const changed = (data.sections || []).map((section) => section.id).filter((id) => (
+    (previous.prd?.sections?.[id] || "") !== (data.prd?.sections?.[id] || "")
+  ));
+  const moved = data.transcript?.length !== previous.transcript?.length
+    || data.toolLog?.length !== previous.toolLog?.length
+    || data.stageIndex !== previous.stageIndex
+    || data.question !== previous.question
+    || data.prd?.updatedAt !== previous.prd?.updatedAt
+    || changed.length;
+  if (moved) paint(data, changed);
+}
+
+function watchVoiceRoom(room, LK) {
+  room.on(LK.RoomEvent.TrackSubscribed, (track) => {
+    if (track.kind !== LK.Track.Kind.Audio) return;
+    const element = track.attach();
+    element.dataset.shapeVoice = "1";
+    element.autoplay = true;
+    document.body.append(element);
+  });
+  room.on(LK.RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
+    if (topic && topic !== "shape") return;
+    let message;
+    try { message = JSON.parse(new TextDecoder().decode(payload)); } catch { return; }
+    if (message.type === "state") setVoicePhase(message.state);
+    if (message.type === "heard") interimEl.textContent = message.text || "";
+    if (message.type === "updated") refreshVoiceSession().catch(() => {});
+    if (message.type === "error" && message.message) showBanner(message.message);
+  });
+  room.on(LK.RoomEvent.ParticipantAttributesChanged, (_changed, participant) => {
+    const next = participant?.attributes?.["lk.agent.state"];
+    if (next) setVoicePhase(next);
+  });
+}
+
+function waitForShape(room, LK) {
+  const present = [...room.remoteParticipants.values()].some((participant) => participant.identity === "shape-agent");
+  if (present) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      room.off(LK.RoomEvent.ParticipantConnected, onJoin);
+      resolve(false);
+    }, 20000);
+    function onJoin(participant) {
+      if (participant.identity !== "shape-agent") return;
+      clearTimeout(timer);
+      room.off(LK.RoomEvent.ParticipantConnected, onJoin);
+      resolve(true);
+    }
+    room.on(LK.RoomEvent.ParticipantConnected, onJoin);
+  });
+}
+
+async function beginVoice(room, LK) {
+  cancelMic();
+  window.speechSynthesis?.cancel();
+  setVoicePhase("connecting");
+  const response = await fetch("/api/livekit/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: state.sessionId, live }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Could not start the voice agent.");
+  if (data.agent === "disabled") throw new Error("The server has LIVEKIT_AGENT=0, so it will not join the room.");
+  await Promise.race([
+    room.connect(data.url, data.token),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Timed out joining the LiveKit room. Check LIVEKIT_URL.")), 15000);
+    }),
+  ]);
+  room.on(LK.RoomEvent.Disconnected, () => {
+    if (voiceRoom === room) stopVoiceAgent({ remote: true });
+  });
+  await room.startAudio();
+  await room.localParticipant.setMicrophoneEnabled(true, {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  });
+  publishVoiceMode();
+  const joined = await waitForShape(room, LK);
+  if (!joined && voiceRoom === room) {
+    throw new Error("Shape did not join the LiveKit room. Check LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET on the server.");
+  }
+  if (!voicePhase || voicePhase === "connecting") setVoicePhase("listening");
+  voicePoll = window.setInterval(() => { refreshVoiceSession().catch(() => {}); }, 1000);
+}
+
+async function startVoiceAgent() {
+  if (!health.livekit?.configured || !state) return;
+  if (voiceAgentOn || voiceConnecting) {
+    await stopVoiceAgent();
+    return;
+  }
+  const LK = window.LivekitClient;
+  if (!LK) {
+    showBanner("LiveKit client is still loading. Try the button again.");
+    return;
+  }
+  voiceConnecting = true;
+  clearBanner();
+  const room = new LK.Room();
+  voiceRoom = room;
+  setVoiceControls(true);
+  watchVoiceRoom(room, LK);
+  try {
+    await room.startAudio();
+    await beginVoice(room, LK);
+  } catch (error) {
+    if (voiceRoom === room) {
+      showBanner(error.message || "Could not start the voice agent.");
+      await stopVoiceAgent();
+    }
+  } finally {
+    voiceConnecting = false;
+  }
+}
+
+async function stopVoiceAgent({ remote = false } = {}) {
+  const room = voiceRoom;
+  const sessionId = state?.sessionId;
+  voiceRoom = null;
+  voiceConnecting = false;
+  if (voicePoll) window.clearInterval(voicePoll);
+  voicePoll = 0;
+  setVoiceControls(false);
+  setVoicePhase("");
+  detachVoiceAudio();
+  interimEl.textContent = "";
+  if (room) {
+    try {
+      const payload = new TextEncoder().encode(JSON.stringify({ type: "stop" }));
+      await room.localParticipant?.publishData(payload, { reliable: true, topic: "shape" });
+    } catch { /* already disconnected */ }
+    try { await room.disconnect(); } catch { /* already disconnected */ }
+  }
+  if (sessionId && health.livekit?.configured) {
+    fetch("/api/livekit/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    }).catch(() => {});
+  }
+}
+
 function bind() {
   demoBtn.addEventListener("click", () => setMode(false));
   liveBtn.addEventListener("click", () => {
@@ -583,7 +816,7 @@ function bind() {
     runToken += 1;
     cancelMic();
     window.speechSynthesis?.cancel();
-    startSession(runToken);
+    stopVoiceAgent().finally(() => startSession(runToken));
   });
   $("sample").addEventListener("click", () => { playSample().catch((error) => showBanner(error.message)); });
   $("context-load").addEventListener("click", () => { submitContext().catch((error) => showBanner(error.message)); });
@@ -603,6 +836,7 @@ function bind() {
     }
   });
   micBtn.addEventListener("click", toggleMic);
+  voiceAgentBtn?.addEventListener("click", () => { startVoiceAgent().catch((error) => showBanner(error.message)); });
   $("download").addEventListener("click", () => { downloadPrd().catch((error) => showBanner(error.message)); });
   voiceBox.addEventListener("change", () => {
     voiceOn = voiceBox.checked;
@@ -621,6 +855,10 @@ async function boot() {
   }
   sttBrowser.checked = false;
   if (health.forceDemo) liveBtn.disabled = true;
+  if (health.livekit?.configured && voiceAgentBtn) {
+    voiceAgentBtn.hidden = false;
+    loadLiveKit().catch(() => {});
+  }
   setMode(!health.forceDemo && health.museConfigured);
   await startSession(runToken);
   window.speechSynthesis?.getVoices();

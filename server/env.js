@@ -54,3 +54,35 @@ export function sttEngine() {
 export function forceDemo() {
   return process.env.DEMO === "1" || process.env.DEMO === "true";
 }
+
+export function livekitConfig() {
+  const url = (process.env.LIVEKIT_URL || "").trim();
+  const apiKey = (process.env.LIVEKIT_API_KEY || "").trim();
+  const apiSecret = (process.env.LIVEKIT_API_SECRET || "").trim();
+  return { url, apiKey, apiSecret, configured: Boolean(url && apiKey && apiSecret) };
+}
+
+// LIVEKIT_AGENT=0 mints room tokens but does not join an agent participant.
+// Used by tests. Unset means the in-process agent starts when a browser asks.
+export function voiceAgentEnabled() {
+  return (process.env.LIVEKIT_AGENT || "").trim() !== "0";
+}
+
+export function livekitUrl() {
+  const { url } = livekitConfig();
+  if (url.startsWith("https://")) return `wss://${url.slice("https://".length)}`;
+  if (url.startsWith("http://")) return `ws://${url.slice("http://".length)}`;
+  return url;
+}
+
+export function ttsModel() {
+  return (process.env.LIVEKIT_TTS_MODEL || "cartesia/sonic-3").trim();
+}
+
+export function ttsVoice() {
+  return (process.env.LIVEKIT_TTS_VOICE || "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc").trim();
+}
+
+export function inferenceSttModel() {
+  return (process.env.LIVEKIT_STT_MODEL || "deepgram/nova-3").trim();
+}

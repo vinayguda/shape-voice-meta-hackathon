@@ -65,9 +65,11 @@
             <label class="sr" for="composer">Your answer</label>
             <textarea id="composer" rows="2" placeholder="Speak, or type the answer"></textarea>
             <div class="composer-actions">
+              <button id="voice-agent" type="button" hidden aria-pressed="false">Voice agent</button>
               <button id="mic" type="button" aria-pressed="false">Mic</button>
               <button id="send" type="submit">Send</button>
             </div>
+            <p id="voice-state" class="voice-state" hidden aria-live="polite"></p>
             <p id="interim" class="interim"></p>
             <p class="hint">Enter to send. Shift+Enter for a new line. Use headphones so the reply does not go back into the mic.</p>
             <p id="mic-engine" class="hint"></p>
