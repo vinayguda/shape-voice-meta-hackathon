@@ -75,6 +75,18 @@ export function livekitUrl() {
   return url;
 }
 
+// HTTP host for RoomService and AgentDispatch. ws://127.0.0.1:7880 -> http://127.0.0.1:7880.
+export function livekitHttpUrl() {
+  const url = livekitUrl();
+  if (url.startsWith("wss://")) return `https://${url.slice("wss://".length)}`;
+  if (url.startsWith("ws://")) return `http://${url.slice("ws://".length)}`;
+  return url;
+}
+
+export function livekitCloud(url = livekitUrl()) {
+  return /livekit\.cloud/i.test(url || "");
+}
+
 export function ttsModel() {
   return (process.env.LIVEKIT_TTS_MODEL || "cartesia/sonic-3").trim();
 }
@@ -85,4 +97,13 @@ export function ttsVoice() {
 
 export function inferenceSttModel() {
   return (process.env.LIVEKIT_STT_MODEL || "deepgram/nova-3").trim();
+}
+
+// Cloud projects can call LiveKit Inference. A local `livekit-server --dev`
+// key cannot, so that mode speaks with espeak-ng into the room instead.
+export function voiceTtsKind() {
+  const forced = (process.env.LIVEKIT_TTS || "").trim().toLowerCase();
+  if (forced === "inference" || forced === "espeak") return forced;
+  if (!livekitConfig().configured) return "off";
+  return livekitCloud() ? "inference" : "espeak";
 }

@@ -46,15 +46,8 @@ export async function issueParticipantToken(session, { live }) {
   if (!voiceAgentEnabled()) {
     agent = "disabled";
   } else {
-    try {
-      const { ensureVoiceAgent } = await import("./voice-agent.js");
-      await ensureVoiceAgent(session.id, { live: Boolean(live) });
-    } catch (error) {
-      error.status = 503;
-      error.code = "livekit_runtime";
-      error.message = error.message || "LiveKit agent runtime failed to start. Run npm install.";
-      throw error;
-    }
+    const { dispatchShape } = await import("./livekit-worker.js");
+    await dispatchShape(room, { sessionId: session.id, live: Boolean(live) });
   }
   return { url: livekitUrl(), token, room, identity, agent };
 }

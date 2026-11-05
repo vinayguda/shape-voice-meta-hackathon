@@ -14,9 +14,11 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@livekit/agents": "^1.9.5",
     "@livekit/rtc-node": "^1.2.1",
     "livekit-client": "^2.23.0",
     "livekit-server-sdk": "^2.19.2",
-    "ws": "^8.22.1"
+    "ws": "^8.22.1",
+    "zod": "^4.6.7"
   }
 }

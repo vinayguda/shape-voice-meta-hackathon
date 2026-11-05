@@ -2,8 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv, baseUrl, forceDemo, livekitConfig, maxTokens, metaKey, modelId, sttEngine, sttModel, ttsModel, voiceAgentEnabled } from "./env.js";
-import { voiceAgents } from "./voice-state.js";
+import { loadEnv, baseUrl, forceDemo, livekitCloud, livekitConfig, maxTokens, metaKey, modelId, sttEngine, sttModel, voiceAgentEnabled, voiceTtsKind } from "./env.js";
 import { extractPdfText, fetchUrlText, loadContext } from "./context.js";
 import { SAMPLE, SAMPLE_CONTEXT } from "./demo.js";
 import { takeTurn } from "./interview.js";
@@ -99,7 +98,7 @@ function health() {
           : "The mic is the browser Web Speech API because META_STT=browser or no API key is set. With META_API_KEY, the mic uses muse-voice-transcribe-1.0.",
     },
     mcp: "/mcp",
-    voice: "Push-to-talk uses Muse Voice Transcribe and speechSynthesis. Voice agent uses a LiveKit room when LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET are set.",
+    voice: "Push-to-talk uses Muse Voice Transcribe and speechSynthesis. Voice agent is a LiveKit Agents pipeline when LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET are set.",
     livekit: livekitHealth(),
   };
 }
@@ -253,8 +252,9 @@ async function handle(req, res) {
     }
     const body = await readJson(req);
     if (!body.sessionId) return sendJson(res, 400, { error: "Missing session.", code: "bad_session" });
-    const { stopVoiceAgent } = await import("./voice-agent.js");
-    const stopped = await stopVoiceAgent(body.sessionId);
+    if (!voiceAgentEnabled()) return sendJson(res, 200, { stopped: false });
+    const { deleteShapeRoom } = await import("./livekit-worker.js");
+    const stopped = await deleteShapeRoom(body.sessionId);
     sendJson(res, 200, { stopped });
     return;
   }
@@ -326,24 +326,6 @@ async function handle(req, res) {
     }
   }
 
-  if (req.method === "GET" && pathname === "/vendor/livekit-client.umd.js") {
-    const file = path.join(root, "node_modules", "livekit-client", "dist", "livekit-client.umd.js");
-    fs.readFile(file, (error, data) => {
-      if (error) {
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("LiveKit client is not installed. Run npm install.");
-        return;
-      }
-      res.writeHead(200, {
-        "Content-Type": "text/javascript; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-Content-Type-Options": "nosniff",
-      });
-      res.end(data);
-    });
-    return;
-  }
-
   if (pathname.startsWith("/api/")) return sendJson(res, 404, { error: "Not found.", code: "not_found" });
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
@@ -360,12 +342,12 @@ function livekitHealth() {
   return {
     configured,
     runtime: configured ? livekitRuntime : "off",
-    agent: "in-process",
-    active: voiceAgents.size,
+    agent: "livekit-agents",
+    active: 0,
     join: configured && voiceAgentEnabled() ? "on" : "off",
     stt: sttModel(),
-    sttFallback: "livekit-inference",
-    tts: ttsModel(),
+    sttFallback: configured && livekitCloud() ? "livekit-inference" : "none",
+    tts: voiceTtsKind(),
   };
 }
 
@@ -402,18 +384,33 @@ if (isMain) {
     );
     if (!metaKey() || forceDemo()) console.log("demo   ready — the UI runs with no API key");
     if (livekitConfig().configured) {
-      livekitRuntime = "starting";
-      const agent = (process.env.LIVEKIT_AGENT || "").trim() === "0" ? "tokens only" : "in-process agent";
-      console.log(`livekit configured · ${agent}`);
-      import("@livekit/rtc-node")
-        .then(() => {
-          livekitRuntime = "ready";
-          console.log("livekit runtime ready");
-        })
-        .catch((error) => {
-          livekitRuntime = "error";
-          console.error("[shape] livekit runtime", error.message);
-        });
+      const agent = voiceAgentEnabled() ? "livekit-agents worker" : "tokens only";
+      console.log(`livekit configured · ${agent} · tts ${voiceTtsKind()}`);
+      if (voiceAgentEnabled()) {
+        livekitRuntime = "starting";
+        import("./livekit-worker.js")
+          .then((mod) => {
+            mod.startShapeWorker();
+            const mark = () => {
+              if (mod.workerState() === "ready") livekitRuntime = "ready";
+            };
+            const timer = setInterval(mark, 500);
+            setTimeout(() => {
+              clearInterval(timer);
+              mark();
+              if (livekitRuntime !== "ready") {
+                livekitRuntime = "error";
+                console.error("[shape] livekit worker has not registered yet. Push-to-talk still works.");
+              }
+            }, 12000);
+          })
+          .catch((error) => {
+            livekitRuntime = "error";
+            console.error("[shape] livekit worker", error.message);
+          });
+      } else {
+        livekitRuntime = "off";
+      }
     } else {
       livekitRuntime = "off";
       console.log("livekit off — push-to-talk only (set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)");

@@ -39,6 +39,7 @@ let voiceConnecting = false;
 let voiceRoom = null;
 let voicePoll = 0;
 let voicePhase = "";
+let voiceGen = 0;
 
 function showBanner(message) {
   banner.hidden = false;
@@ -633,15 +634,32 @@ function setVoiceControls(active) {
   recommendBtn.disabled = active;
 }
 
+let livekitClient;
+
 function loadLiveKit() {
-  if (window.LivekitClient) return Promise.resolve(window.LivekitClient);
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "/vendor/livekit-client.umd.js";
-    script.onload = () => (window.LivekitClient ? resolve(window.LivekitClient) : reject(new Error("LiveKit client did not load.")));
-    script.onerror = () => reject(new Error("Could not load the LiveKit browser client."));
-    document.head.append(script);
+  if (livekitClient) return Promise.resolve(livekitClient);
+  return import("/vendor/livekit-client.esm.js").then((mod) => {
+    livekitClient = mod;
+    return mod;
   });
+}
+
+async function connectRoom({ url, token }) {
+  const { Room, RoomEvent, Track } = await loadLiveKit();
+  const room = new Room({ adaptiveStream: false, dynacast: false });
+  await Promise.race([
+    room.connect(url, token),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Timed out joining the LiveKit room. Check LIVEKIT_URL.")), 15000);
+    }),
+  ]);
+  await room.startAudio();
+  await room.localParticipant.setMicrophoneEnabled(true, {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  });
+  return { room, RoomEvent, Track };
 }
 
 function publishVoiceMode() {
@@ -685,7 +703,6 @@ function watchVoiceRoom(room, LK) {
     let message;
     try { message = JSON.parse(new TextDecoder().decode(payload)); } catch { return; }
     if (message.type === "state") setVoicePhase(message.state);
-    if (message.type === "heard") interimEl.textContent = message.text || "";
     if (message.type === "updated") refreshVoiceSession().catch(() => {});
     if (message.type === "error" && message.message) showBanner(message.message);
   });
@@ -696,15 +713,13 @@ function watchVoiceRoom(room, LK) {
 }
 
 function waitForShape(room, LK) {
-  const present = [...room.remoteParticipants.values()].some((participant) => participant.identity === "shape-agent");
-  if (present) return Promise.resolve(true);
+  if (room.remoteParticipants.size > 0) return Promise.resolve(true);
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       room.off(LK.RoomEvent.ParticipantConnected, onJoin);
       resolve(false);
     }, 20000);
-    function onJoin(participant) {
-      if (participant.identity !== "shape-agent") return;
+    function onJoin() {
       clearTimeout(timer);
       room.off(LK.RoomEvent.ParticipantConnected, onJoin);
       resolve(true);
@@ -713,7 +728,7 @@ function waitForShape(room, LK) {
   });
 }
 
-async function beginVoice(room, LK) {
+async function beginVoice(gen) {
   cancelMic();
   window.speechSynthesis?.cancel();
   setVoicePhase("connecting");
@@ -723,27 +738,24 @@ async function beginVoice(room, LK) {
     body: JSON.stringify({ sessionId: state.sessionId, live }),
   });
   const data = await response.json();
+  if (gen !== voiceGen) return;
   if (!response.ok) throw new Error(data.error || "Could not start the voice agent.");
   if (data.agent === "disabled") throw new Error("The server has LIVEKIT_AGENT=0, so it will not join the room.");
-  await Promise.race([
-    room.connect(data.url, data.token),
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("Timed out joining the LiveKit room. Check LIVEKIT_URL.")), 15000);
-    }),
-  ]);
-  room.on(LK.RoomEvent.Disconnected, () => {
+  const { room, RoomEvent, Track } = await connectRoom({ url: data.url, token: data.token });
+  if (gen !== voiceGen) {
+    try { await room.disconnect(); } catch { /* cancelled */ }
+    return;
+  }
+  voiceRoom = room;
+  watchVoiceRoom(room, { RoomEvent, Track });
+  room.on(RoomEvent.Disconnected, () => {
     if (voiceRoom === room) stopVoiceAgent({ remote: true });
   });
-  await room.startAudio();
-  await room.localParticipant.setMicrophoneEnabled(true, {
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true,
-  });
   publishVoiceMode();
-  const joined = await waitForShape(room, LK);
+  const joined = await waitForShape(room, { RoomEvent });
+  if (gen !== voiceGen) return;
   if (!joined && voiceRoom === room) {
-    throw new Error("Shape did not join the LiveKit room. Check LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET on the server.");
+    throw new Error("Shape did not join the LiveKit room. Start livekit-server --dev, or check LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET.");
   }
   if (!voicePhase || voicePhase === "connecting") setVoicePhase("listening");
   voicePoll = window.setInterval(() => { refreshVoiceSession().catch(() => {}); }, 1000);
@@ -755,31 +767,24 @@ async function startVoiceAgent() {
     await stopVoiceAgent();
     return;
   }
-  const LK = window.LivekitClient;
-  if (!LK) {
-    showBanner("LiveKit client is still loading. Try the button again.");
-    return;
-  }
+  const gen = ++voiceGen;
   voiceConnecting = true;
   clearBanner();
-  const room = new LK.Room();
-  voiceRoom = room;
   setVoiceControls(true);
-  watchVoiceRoom(room, LK);
   try {
-    await room.startAudio();
-    await beginVoice(room, LK);
+    await beginVoice(gen);
   } catch (error) {
-    if (voiceRoom === room) {
+    if (gen === voiceGen) {
       showBanner(error.message || "Could not start the voice agent.");
       await stopVoiceAgent();
     }
   } finally {
-    voiceConnecting = false;
+    if (gen === voiceGen) voiceConnecting = false;
   }
 }
 
-async function stopVoiceAgent({ remote = false } = {}) {
+async function stopVoiceAgent() {
+  voiceGen += 1;
   const room = voiceRoom;
   const sessionId = state?.sessionId;
   voiceRoom = null;

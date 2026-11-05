@@ -48,6 +48,36 @@ export function resampleInt16(input, fromRate, toRate) {
   return out;
 }
 
+export function decodeWav(buffer) {
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  if (buf.length < 44 || buf.toString("ascii", 0, 4) !== "RIFF" || buf.toString("ascii", 8, 12) !== "WAVE") {
+    throw new Error("Audio was not a WAV file.");
+  }
+  let offset = 12;
+  let channels = 1;
+  let rate = 16000;
+  let bits = 16;
+  let data = null;
+  while (offset + 8 <= buf.length) {
+    const id = buf.toString("ascii", offset, offset + 4);
+    const size = buf.readUInt32LE(offset + 4);
+    const start = offset + 8;
+    if (id === "fmt " && start + 16 <= buf.length) {
+      channels = buf.readUInt16LE(start + 2);
+      rate = buf.readUInt32LE(start + 4);
+      bits = buf.readUInt16LE(start + 14);
+    } else if (id === "data") {
+      data = buf.subarray(start, Math.min(buf.length, start + size));
+      break;
+    }
+    offset = start + size + (size % 2);
+  }
+  if (!data || bits !== 16) throw new Error("WAV data was not 16-bit PCM.");
+  const view = new Int16Array(data.buffer, data.byteOffset, Math.floor(data.length / 2));
+  const samples = new Int16Array(view);
+  return { samples: channels > 1 ? downmix(samples, channels) : samples, sampleRate: rate, channels: 1 };
+}
+
 export function encodeWav(samples, rate = 16000) {
   const pcm = samples instanceof Int16Array ? samples : Int16Array.from(samples || []);
   const data = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
