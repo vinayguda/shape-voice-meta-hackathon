@@ -1,5 +1,5 @@
 import { AccessToken } from "livekit-server-sdk";
-import { livekitConfig, livekitUrl, voiceAgentEnabled } from "./env.js";
+import { livekitConfig, livekitHttpUrl, livekitUrl, voiceAgentEnabled } from "./env.js";
 
 export function roomNameFor(sessionId) {
   const id = String(sessionId || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80);
@@ -52,4 +52,4 @@ export async function issueParticipantToken(session, { live }) {
   return { url: livekitUrl(), token, room, identity, agent };
 }
 
-export { livekitConfig, livekitUrl, voiceAgentEnabled };
+export { livekitConfig, livekitHttpUrl, livekitUrl, voiceAgentEnabled };

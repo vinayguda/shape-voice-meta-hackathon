@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { AgentDispatchClient, RoomServiceClient } from "livekit-server-sdk";
-import { AgentServer, ServerOptions } from "@livekit/agents";
+import { AgentServer, ServerOptions, initializeLogger } from "@livekit/agents";
 import { livekitConfig, livekitHttpUrl, livekitUrl, roomNameFor } from "./livekit.js";
 
 export const SHAPE_AGENT_NAME = "shape";
@@ -23,6 +23,7 @@ export function startShapeWorker() {
   if (!configured) return Promise.resolve();
   const port = process.env.PORT || "3000";
   process.env.SHAPE_BASE_URL = `http://127.0.0.1:${port}`;
+  initializeLogger({ pretty: false, level: "info" });
   server = new AgentServer(new ServerOptions({
     agent: fileURLToPath(new URL("./agent-entry.js", import.meta.url)),
     agentName: SHAPE_AGENT_NAME,
