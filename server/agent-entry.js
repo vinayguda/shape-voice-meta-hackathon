@@ -247,6 +247,15 @@ function readJob(ctx) {
 }
 
 export default defineAgent({
+  prewarm: (proc) => {
+    const vad = new inference.VAD({ model: "silero" });
+    try {
+      vad.stream().close();
+    } catch (error) {
+      console.error("[shape] silero prewarm", error.message);
+    }
+    proc.userData.vad = vad;
+  },
   entry: async (ctx) => {
     const control = readJob(ctx);
     if (!control.sessionId) throw new Error("Shape voice job is missing a session id.");
@@ -262,7 +271,7 @@ export default defineAgent({
       if (ctx.room.remoteParticipants.size === 0) ctx.shutdown("user left");
     });
     const session = new voice.AgentSession({
-      vad: new inference.VAD({ model: "silero" }),
+      vad: ctx.proc.userData.vad || new inference.VAD({ model: "silero" }),
       stt: buildStt(control.sessionId, control.live),
       llm: new ShapeLLM(control, ctx.room),
       tts: buildTts(),

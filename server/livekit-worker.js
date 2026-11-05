@@ -31,6 +31,12 @@ export function startShapeWorker() {
     apiKey,
     apiSecret,
     logLevel: "info",
+    // Render free is 0.1 CPU / 512MB. The job runner must already be up, and
+    // load is compared with >= so 1.0 still marks a saturated tiny CPU unavailable.
+    initializeProcessTimeout: 120000,
+    shutdownProcessTimeout: 120000,
+    numIdleProcesses: 1,
+    loadThreshold: Infinity,
   }));
   server.event.on("worker_registered", () => {
     registered = true;
