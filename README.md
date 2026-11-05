@@ -13,25 +13,25 @@ Demo video: [TO FILL]
 
 ## Quickstart
 
-Node 20 or newer. No install step.
+Node 20 or newer.
 
 ```bash
 git clone https://github.com/vinayguda/shape-voice-meta-hackathon.git
 cd shape-voice-meta-hackathon
+npm install
 make dev
 ```
 
 If `make` is not installed:
 
 ```bash
+npm install
 npm start
-# or
-node server/index.js
 ```
 
 Open http://localhost:3000. Leave the toggle on **Demo** and click **Play sample idea**, or hold **Mic** (Chrome) and answer out loud. **Download .md** saves the PRD.
 
-That one process serves the UI, the interview, and the MCP endpoint. Demo mode does not call the network.
+That one process serves the UI, the interview, the MCP endpoint, and, when LiveKit is configured, the voice-agent participant. Demo mode does not call Meta. Push-to-talk still runs if the LiveKit variables are unset; `node server/index.js` without `npm install` keeps that path, and `npm run check` needs the install because the token test loads the LiveKit server SDK.
 
 Live Muse, when you have a key:
 
@@ -40,7 +40,7 @@ cp .env.example .env   # set META_API_KEY
 npm start              # or: make dev
 ```
 
-Toggle **Live Muse** in the header. `npm run check` or `make check` runs the scripted interview, the no-key guard, and the MCP tools.
+Toggle **Live Muse** in the header. `npm install` then `npm run check` or `make check` runs the scripted interview, the no-key guard, the MCP tools, and the LiveKit token gate.
 
 ## Hackathon
 
@@ -50,7 +50,7 @@ Toggle **Live Muse** in the header. `npm run check` or `make check` runs the scr
 | Theme | Build for Your World |
 | Window | October 26–November 4, 2026 |
 | Entrant | Vinay Guda (solo) |
-| Models | `muse-spark-1.3` on every live turn. `muse-voice-transcribe-1.0` on every mic clip when a key is set. |
+| Models | `muse-spark-1.3` on every live turn, including the LiveKit voice agent. `muse-voice-transcribe-1.0` on Live mic clips and on voice-agent utterances when a key is set. |
 
 Shape is for the builder who can explain an idea out loud and still walks into a blank doc. The interview asks the questions that usually get skipped, and the canvas is the spec at the end of the conversation.
 
@@ -68,6 +68,10 @@ Muse Spark is a reasoning model. Reasoning tokens count against `max_tokens`. A 
 A live interview turn is **one** chat completion. The spoken reply comes back in that same response as the PRD tool calls (`commit_turn`), and Shape applies the tools locally. On the owner's key, the previous two-call turns averaged about **16 seconds** (20.7, 13.2, 12.8, 27.4, 9.9, 13.9; each Muse call about 9 seconds, 245–1943 reasoning tokens). Dropping the second call puts a turn on the order of **one call, about 9–13 seconds**, plus about **1.6 seconds** for Muse Voice Transcribe. The screen says **Thinking…** while that call is in flight, and Shape says “Got it.” as soon as you release the mic. Raise `META_MAX_TOKENS` if a turn comes back cut off.
 
 The mic is push-to-talk. The browser records a clip, resamples it to 16 kHz mono WAV, and Shape posts it to `POST /v1/asr/transcribe`. That call is verified: HTTP 200, transcript in `transcript`, about 1–2 seconds for a 4 second clip. The JSON part must be exactly `{"model":"muse-voice-transcribe-1.0","audioEncoding":"WAV","sampleRateHertz":16000}`. `audioEncoding` is case-sensitive (`wav`, `LINEAR16`, and `PCM_S16LE` return 400). `POST /v1/audio/transcriptions` returns 404, and the realtime WebSocket is not used. Each clip is a row in the tool log (`asr/transcribe`).
+
+**Voice agent (LiveKit)** is the hands-free path, the same shape as a LiveKit Agents worker: silero VAD and VAD turn detection, then speech-to-text, then the interview model, then text-to-speech played into the room. You can interrupt Shape while it is talking. The worker runs inside this Node process (`@livekit/agents`), so Render stays one web service.
+
+Live mode transcribes with `muse-voice-transcribe-1.0` and answers with `muse-spark-1.3` through `takeTurn` on that same session, so the PRD panel updates live. Demo mode still uses the canned interview. On LiveKit Cloud, Demo speech-to-text can fall back to LiveKit Inference, and speech-out is LiveKit Inference (`cartesia/sonic-3`). A local `livekit-server --dev` cannot call Inference with the dev key, so that mode speaks with `espeak-ng` into the room and transcribes with Muse.
 
 `META_STT=browser` forces the Web Speech API in Live mode. **Demo mode always uses browser speech**, even when `META_API_KEY` is set, so a demo makes no Meta calls. With no key, Live mode uses that same browser fallback. Meta does not ship text-to-speech here, so replies use `speechSynthesis`.
 
@@ -212,9 +216,32 @@ curl -s http://localhost:3000/mcp \
 
 `tools/call` accepts `create_prd`, `update_prd_section`, and `export_prd`. Pass `sessionId` to aim at an interview session, or omit it to use the default MCP session.
 
-### Voice choice
+### Voice agent
 
-LiveKit Agents would work, and the earlier Voice Agent Studio project was built that way. This repo does not copy that code. Shape stays one Node process: the browser records, Muse Voice Transcribe transcribes, Muse Spark interviews, and `speechSynthesis` speaks. Use headphones so the reply does not walk back into the mic. Typing and **Play sample idea** cover a machine with no microphone. Set `META_STT=browser` if you want the Web Speech API instead of Muse.
+Push-to-talk stays the default. **Voice agent** is hidden until `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` are all set. `/api/health` reports that as `livekit.configured`. With any of them missing, token and stop return HTTP 503 `livekit_unconfigured`, and the mic button behaves as before.
+
+The browser loads `/vendor/livekit-client.esm.js` and joins in `connectRoom`. `POST /api/livekit/token` mints the JWT and dispatches the agent named `shape`. `server/agent-entry.js` is a LiveKit Agents session: silero VAD, VAD turn detection, speech-to-text, `takeTurn`, then TTS audio on the agent track. You can interrupt Shape. The state line follows `lk.agent.state`. The panel polls the same session, so the PRD updates live. Stop deletes the room.
+
+```bash
+# Local room. Other terminal: livekit-server --dev
+# These are the dev server's published credentials, not a cloud secret.
+LIVEKIT_URL=ws://127.0.0.1:7880
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=secret
+```
+
+Install `espeak-ng` for that mode. Dev keys cannot call LiveKit Inference, so Shape speaks with espeak into the room and transcribes with `muse-voice-transcribe-1.0`.
+
+```bash
+# LiveKit Cloud. Speech out is LiveKit Inference, cartesia/sonic-3.
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=
+```
+
+On Cloud, Demo speech-to-text can use LiveKit Inference so a demo does not have to call Muse to hear you. Live mode always transcribes with Muse and interviews with `muse-spark-1.3`. `LIVEKIT_AGENT=0` mints tokens and does not start the worker.
+
+The worker runs in this process. It does not need a second Render service. Use headphones. The first thing Shape says is the question already on screen.
 
 Before the first question you can paste notes, upload a `.md`, `.txt`, or text-based `.pdf`, or give a public URL. Shape stores that on the session, logs `load_context`, and puts a short summary in the Muse prompt on every turn so the question can cite it ("Your notes say X — does that mean…?"). **Play sample idea** loads an example set of parent-interview notes. The header shows **Context loaded** once it's in.
 
@@ -251,8 +278,36 @@ See `.env.example`. The names that matter:
 | `META_STT` | Unset uses Muse Voice Transcribe when a key is set. `browser` forces the Web Speech API. |
 | `META_STT_MODEL` | Default `muse-voice-transcribe-1.0`. |
 | `DEMO` | `1` forces the canned interview even if a key is set. |
+| `LIVEKIT_URL` | `wss://….livekit.cloud` or local `ws://127.0.0.1:7880`. All three LiveKit variables are required or the voice agent stays off. |
+| `LIVEKIT_API_KEY` | Cloud API key, or `devkey` for `livekit-server --dev`. |
+| `LIVEKIT_API_SECRET` | Cloud API secret, or `secret` for `livekit-server --dev`. Never commit a cloud secret. |
+| `LIVEKIT_AGENT` | Optional. `0` mints tokens and does not start the worker. Unset starts it. |
+| `LIVEKIT_TTS` | Optional. `inference` or `espeak`. Default is Inference on `*.livekit.cloud` and espeak-ng otherwise. |
+| `LIVEKIT_TTS_MODEL` | Inference TTS model when that path is used. Default `cartesia/sonic-3`. |
+| `LIVEKIT_TTS_VOICE` | Inference voice id. Default is the LiveKit Cartesia example voice. |
+| `LIVEKIT_STT_MODEL` | Inference STT model used for Demo on LiveKit Cloud. Default `deepgram/nova-3`. Live mode uses `muse-voice-transcribe-1.0`. |
 
-The browser never sees the key. `/api/health` reports only whether a key is present.
+The browser never sees the Meta key or the LiveKit secret. `/api/health` reports whether each is present. `livekit.runtime` is `ready` after the Agents worker registers with LiveKit. `livekit.tts` is `inference` on Cloud, `espeak` for a local dev server, and `off` when LiveKit is unset.
+
+### Render
+
+One web service, free plan is enough to boot. Build command `npm install`. Start command `npm start`. Shape binds `0.0.0.0:$PORT`. Set the env vars on the service:
+
+- `META_API_KEY` for Live Muse and Muse STT
+- `LIVEKIT_URL`
+- `LIVEKIT_API_KEY`
+- `LIVEKIT_API_SECRET`
+
+Do not add a second worker service. The agent participant starts in this process when someone clicks **Voice agent**. Free instances sleep after about 15 minutes without HTTP traffic, and a sleeping instance drops the room. The disk is ephemeral; sessions already live in memory.
+
+### What a live room still has to prove
+
+These were not run here, because this environment has no LiveKit project:
+
+- The browser connects, the Agents worker joins, and the state line moves connecting → listening → thinking → speaking while audio comes from the agent track.
+- A Live utterance is transcribed by `muse-voice-transcribe-1.0`, `takeTurn` calls `muse-spark-1.3`, and the PRD panel updates.
+- On LiveKit Cloud the reply is Inference TTS. On `livekit-server --dev` the reply is espeak-ng in the room, and talking over Shape interrupts it.
+- Memory on a Render free instance once the worker and a job are running.
 
 ## License
 

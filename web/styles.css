@@ -103,7 +103,7 @@ button { cursor: pointer; }
   color: var(--lime);
 }
 .seg { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
-.seg button, .ghost, .sheet button, #speak, #send, #mic {
+.seg button, .ghost, .sheet button, #speak, #send, #mic, #voice-agent {
   border: 0;
   background: transparent;
 }
@@ -295,12 +295,26 @@ button { cursor: pointer; }
   padding: 10px 12px;
 }
 #composer:focus { outline: 2px solid var(--lime); outline-offset: 1px; }
-.composer-actions { display: flex; justify-content: flex-end; gap: 8px; }
-#mic, #send {
+.composer-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+#mic, #send, #voice-agent {
   height: 44px;
   border-radius: 12px;
   font-weight: 650;
 }
+#voice-agent {
+  padding: 0 14px;
+  border: 1px solid var(--line) !important;
+}
+#voice-agent.on {
+  background: var(--lime);
+  color: var(--lime-ink);
+  border-color: transparent !important;
+}
+#voice-agent:disabled { opacity: 0.55; cursor: wait; }
+.voice-state { margin: 0; color: var(--lime); font-family: var(--mono); font-size: 12px; }
+.voice-state[hidden] { display: none; }
+.voice-state[data-state="thinking"] { color: var(--amber); }
+.voice-state[data-state="speaking"] { color: var(--text); }
 #mic {
   min-width: 88px;
   padding: 0 18px;

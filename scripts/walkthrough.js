@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertPublicHttpUrl, extractPdfText, loadContext, stripHtml } from "../server/context.js";
 import { cleanProse, demoTurn, isUnsure, looksBloated, rewriteProblem, SAMPLE, SAMPLE_CONTEXT, synthesize } from "../server/demo.js";
-import { sttEngine } from "../server/env.js";
+import { createVad, decodeWav, encodeWav, resampleInt16 } from "../server/audio.js";
+import { livekitConfig, livekitHttpUrl, sttEngine, voiceAgentEnabled, voiceTtsKind } from "../server/env.js";
 import { brief, decideAdvance, questionFitsStage, routeFor, takeTurn } from "../server/interview.js";
 import { shouldDropReasoningEffort, transcribeRequest, wavIs16kMono } from "../server/muse.js";
 import { createSession, executeTool, formatScope, titleFrom, toMarkdown } from "../server/prd.js";
@@ -36,7 +37,15 @@ function unit() {
   assert.equal(shouldDropReasoningEffort(400, "bad model"), false);
   assert.equal(shouldDropReasoningEffort(401, "reasoning_effort"), false);
 
-  const saved = { DEMO: process.env.DEMO, META_API_KEY: process.env.META_API_KEY, MODEL_API_KEY: process.env.MODEL_API_KEY };
+  const saved = {
+    DEMO: process.env.DEMO,
+    META_API_KEY: process.env.META_API_KEY,
+    MODEL_API_KEY: process.env.MODEL_API_KEY,
+    LIVEKIT_URL: process.env.LIVEKIT_URL,
+    LIVEKIT_API_KEY: process.env.LIVEKIT_API_KEY,
+    LIVEKIT_API_SECRET: process.env.LIVEKIT_API_SECRET,
+    LIVEKIT_AGENT: process.env.LIVEKIT_AGENT,
+  };
   delete process.env.DEMO;
   delete process.env.META_API_KEY;
   delete process.env.MODEL_API_KEY;
@@ -54,6 +63,62 @@ function unit() {
   delete process.env.META_STT;
   delete process.env.META_API_KEY;
   assert.equal(sttEngine(), "browser");
+  delete process.env.LIVEKIT_URL;
+  delete process.env.LIVEKIT_API_KEY;
+  delete process.env.LIVEKIT_API_SECRET;
+  delete process.env.LIVEKIT_AGENT;
+  assert.equal(livekitConfig().configured, false);
+  assert.equal(voiceAgentEnabled(), true);
+  process.env.LIVEKIT_URL = "wss://shape-test.livekit.cloud";
+  process.env.LIVEKIT_API_KEY = "APIshapeTestKey";
+  assert.equal(livekitConfig().configured, false);
+  process.env.LIVEKIT_API_SECRET = "secretsecretsecretsecretsecretse";
+  assert.equal(livekitConfig().configured, true);
+  process.env.LIVEKIT_AGENT = "0";
+  assert.equal(voiceAgentEnabled(), false);
+  delete process.env.LIVEKIT_AGENT;
+  assert.equal(voiceAgentEnabled(), true);
+  const tone = new Int16Array(320);
+  for (let i = 0; i < tone.length; i += 1) tone[i] = Math.round(Math.sin(i / 4) * 8000);
+  const quiet = new Int16Array(320);
+  const vad = createVad();
+  for (let i = 0; i < 10; i += 1) assert.equal(vad.push({ samples: quiet, sampleRate: 16000, channels: 1 }), null);
+  for (let i = 0; i < 2; i += 1) vad.push({ samples: tone, sampleRate: 16000, channels: 1 });
+  let dropped = null;
+  for (let i = 0; i < 40; i += 1) dropped = vad.push({ samples: quiet, sampleRate: 16000, channels: 1 }) || dropped;
+  assert.equal(dropped.type, "drop");
+  const heard = createVad();
+  for (let i = 0; i < 20; i += 1) heard.push({ samples: tone, sampleRate: 16000, channels: 1 });
+  let utterance = null;
+  for (let i = 0; i < 40; i += 1) utterance = heard.push({ samples: quiet, sampleRate: 16000, channels: 1 }) || utterance;
+  assert.equal(utterance.type, "utterance");
+  assert.ok(utterance.samples.length > 1000);
+  const stereo = new Int16Array([0, 0, 9000, 9000]);
+  const stereoVad = createVad({ minSpeechMs: 0, silenceMs: 1, threshold: 500 });
+  stereoVad.push({ samples: stereo, sampleRate: 16000, channels: 2 });
+  const stereoEnd = stereoVad.push({ samples: new Int16Array(64), sampleRate: 16000, channels: 1 });
+  assert.equal(stereoEnd.type, "utterance");
+  const wav = encodeWav(tone, 16000);
+  assert.equal(wavIs16kMono(wav), true);
+  const decoded = decodeWav(wav);
+  assert.equal(decoded.sampleRate, 16000);
+  assert.equal(decoded.samples.length, tone.length);
+  assert.equal(decoded.samples[10], tone[10]);
+  const stretched = resampleInt16(new Int16Array([0, 16000]), 8000, 16000);
+  assert.equal(stretched.length, 4);
+  process.env.LIVEKIT_URL = "ws://127.0.0.1:7880";
+  process.env.LIVEKIT_API_KEY = "devkey";
+  process.env.LIVEKIT_API_SECRET = "secret";
+  assert.equal(livekitConfig().configured, true);
+  assert.equal(livekitHttpUrl(), "http://127.0.0.1:7880");
+  assert.equal(voiceTtsKind(), "espeak");
+  process.env.LIVEKIT_URL = "wss://shape.livekit.cloud";
+  assert.equal(livekitHttpUrl(), "https://shape.livekit.cloud");
+  assert.equal(voiceTtsKind(), "inference");
+  delete process.env.LIVEKIT_URL;
+  delete process.env.LIVEKIT_API_KEY;
+  delete process.env.LIVEKIT_API_SECRET;
+  assert.equal(voiceTtsKind(), "off");
   const request = transcribeRequest();
   assert.deepEqual(request, { model: "muse-voice-transcribe-1.0", audioEncoding: "WAV", sampleRateHertz: 16000 });
   assert.equal(wavIs16kMono(wavHeader(16000, 1, 16)), true);
@@ -175,12 +240,16 @@ function unit() {
   assert.match(revised.question, /Updated success metrics/);
 }
 
-async function startServer() {
-  const env = { ...process.env, PORT: String(port) };
+async function startServer(listenPort = port, extra = {}) {
+  const env = { ...process.env, PORT: String(listenPort), ...extra };
   delete env.META_API_KEY;
   delete env.MODEL_API_KEY;
   delete env.DEMO;
   delete env.META_STT;
+  if (!Object.prototype.hasOwnProperty.call(extra, "LIVEKIT_URL")) delete env.LIVEKIT_URL;
+  if (!Object.prototype.hasOwnProperty.call(extra, "LIVEKIT_API_KEY")) delete env.LIVEKIT_API_KEY;
+  if (!Object.prototype.hasOwnProperty.call(extra, "LIVEKIT_API_SECRET")) delete env.LIVEKIT_API_SECRET;
+  if (!Object.prototype.hasOwnProperty.call(extra, "LIVEKIT_AGENT")) delete env.LIVEKIT_AGENT;
   env.META_MODEL = "muse-spark-1.3";
   env.META_BASE_URL = "https://api.meta.ai/v1";
   const child = spawn(process.execPath, ["server/index.js"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -233,6 +302,27 @@ async function http() {
   assert.equal(health.stt.audioEncoding, "WAV");
   assert.equal(health.stt.sampleRateHertz, 16000);
   assert.equal(health.stt.browserFallback, true);
+  assert.equal(health.livekit.configured, false);
+  assert.equal(health.livekit.runtime, "off");
+  assert.equal(health.livekit.join, "off");
+  assert.equal(health.livekit.active, 0);
+  assert.equal(health.livekit.agent, "livekit-agents");
+  assert.equal(health.livekit.tts, "off");
+  assert.equal(health.livekit.sttFallback, "none");
+
+  const gated = await post("/api/livekit/token", { sessionId: "missing" });
+  assert.equal(gated.status, 503);
+  assert.equal(gated.json.code, "livekit_unconfigured");
+  const gatedStop = await post("/api/livekit/stop", { sessionId: "missing" });
+  assert.equal(gatedStop.status, 503);
+  assert.equal(gatedStop.json.code, "livekit_unconfigured");
+
+  const client = await fetch(`${base}/vendor/livekit-client.esm.js`);
+  assert.equal(client.status, 200);
+  assert.match(client.headers.get("content-type") || "", /javascript/);
+  const clientJs = await client.text();
+  assert.match(clientJs, /RoomEvent/);
+  assert.match(clientJs, /export\{/);
 
   const html = await fetch(`${base}/`).then((response) => response.text());
   assert.match(html, /Build for Your World/);
@@ -405,6 +495,84 @@ async function pushbackTurn() {
   }
 }
 
+async function livekitHttp() {
+  const listenPort = 3107;
+  const origin = `http://127.0.0.1:${listenPort}`;
+  const apiKey = "APIshapeTestKey";
+  const apiSecret = "secretsecretsecretsecretsecretse";
+  const child = await startServer(listenPort, {
+    LIVEKIT_URL: "wss://shape-test.livekit.cloud",
+    LIVEKIT_API_KEY: apiKey,
+    LIVEKIT_API_SECRET: apiSecret,
+    LIVEKIT_AGENT: "0",
+  });
+  const call = async (pathname, body) => {
+    const response = await fetch(origin + pathname, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch { json = { raw: text }; }
+    return { status: response.status, json, text };
+  };
+  try {
+    const health = await fetch(`${origin}/api/health`).then((response) => response.json());
+    assert.equal(health.livekit.configured, true);
+    assert.equal(health.livekit.join, "off");
+    assert.equal(health.livekit.tts, "inference");
+    assert.equal(health.museConfigured, false);
+    assert.equal(health.stt.engine, "browser");
+    const created = await call("/api/session", {});
+    assert.equal(created.status, 200);
+    const missing = await call("/api/livekit/token", { sessionId: "nope" });
+    assert.equal(missing.status, 404);
+    const issued = await call("/api/livekit/token", { sessionId: created.json.sessionId, live: false });
+    assert.equal(issued.status, 200, issued.text);
+    assert.equal(issued.json.agent, "disabled");
+    assert.equal(issued.json.room, `shape-${created.json.sessionId}`);
+    assert.equal(issued.json.url, "wss://shape-test.livekit.cloud");
+    const { TokenVerifier } = await import("livekit-server-sdk");
+    const claims = await new TokenVerifier(apiKey, apiSecret).verify(issued.json.token);
+    assert.equal(claims.sub, issued.json.identity);
+    assert.equal(claims.video.room, issued.json.room);
+    assert.equal(claims.video.roomJoin, true);
+    assert.equal(claims.video.roomCreate, true);
+    assert.equal(claims.video.canPublish, true);
+    assert.equal(claims.video.canSubscribe, true);
+    assert.equal(claims.video.canPublishData, true);
+    const { mintJoinToken } = await import("../server/livekit.js");
+    process.env.LIVEKIT_URL = "wss://shape-test.livekit.cloud";
+    process.env.LIVEKIT_API_KEY = apiKey;
+    process.env.LIVEKIT_API_SECRET = apiSecret;
+    const agentToken = await mintJoinToken({
+      identity: "shape-agent",
+      name: "Shape",
+      room: issued.json.room,
+      attributes: { "lk.agent.state": "initializing" },
+    });
+    delete process.env.LIVEKIT_URL;
+    delete process.env.LIVEKIT_API_KEY;
+    delete process.env.LIVEKIT_API_SECRET;
+    const agentClaims = await new TokenVerifier(apiKey, apiSecret).verify(agentToken);
+    assert.equal(agentClaims.sub, "shape-agent");
+    assert.equal(agentClaims.video.room, issued.json.room);
+    assert.equal(agentClaims.attributes["lk.agent.state"], "initializing");
+    const stopped = await call("/api/livekit/stop", { sessionId: created.json.sessionId });
+    assert.equal(stopped.status, 200);
+    assert.equal(stopped.json.stopped, false);
+    const turn = await call("/api/turn", { sessionId: created.json.sessionId, text: "Parents only notice the fight, not the pattern of screen time.", live: false });
+    assert.equal(turn.status, 200, turn.text);
+    assert.equal(turn.json.modelCall.live, false);
+    const blocked = await call("/api/turn", { sessionId: created.json.sessionId, text: "This must not call Muse.", live: true });
+    assert.equal(blocked.status, 400);
+    assert.equal(blocked.json.code, "no_key");
+  } finally {
+    child.kill("SIGTERM");
+  }
+}
+
 const child = await startServer().catch((error) => {
   console.error(error);
   process.exit(1);
@@ -413,6 +581,7 @@ try {
   unit();
   await pushbackTurn();
   await http();
+  await livekitHttp();
   console.log("walkthrough ok");
 } finally {
   child.kill("SIGTERM");

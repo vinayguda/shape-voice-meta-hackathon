@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv, baseUrl, forceDemo, maxTokens, metaKey, modelId, sttEngine, sttModel } from "./env.js";
+import { loadEnv, baseUrl, forceDemo, livekitCloud, livekitConfig, maxTokens, metaKey, modelId, sttEngine, sttModel, voiceAgentEnabled, voiceTtsKind } from "./env.js";
 import { extractPdfText, fetchUrlText, loadContext } from "./context.js";
 import { SAMPLE, SAMPLE_CONTEXT } from "./demo.js";
 import { takeTurn } from "./interview.js";
@@ -98,7 +98,8 @@ function health() {
           : "The mic is the browser Web Speech API because META_STT=browser or no API key is set. With META_API_KEY, the mic uses muse-voice-transcribe-1.0.",
     },
     mcp: "/mcp",
-    voice: "Muse Voice Transcribe in, speechSynthesis out. Browser speech is the fallback.",
+    voice: "Push-to-talk uses Muse Voice Transcribe and speechSynthesis. Voice agent is a LiveKit Agents pipeline when LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET are set.",
+    livekit: livekitHealth(),
   };
 }
 
@@ -226,6 +227,38 @@ async function handle(req, res) {
     return;
   }
 
+  if (req.method === "POST" && pathname === "/api/livekit/token") {
+    if (!livekitConfig().configured) {
+      return sendJson(res, 503, {
+        error: "LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET.",
+        code: "livekit_unconfigured",
+      });
+    }
+    const body = await readJson(req);
+    const session = sessions.get(body.sessionId);
+    if (!session) return sendJson(res, 404, { error: "No such session.", code: "not_found" });
+    const { issueParticipantToken } = await import("./livekit.js");
+    const issued = await issueParticipantToken(session, { live: Boolean(body.live) });
+    sendJson(res, 200, issued);
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/livekit/stop") {
+    if (!livekitConfig().configured) {
+      return sendJson(res, 503, {
+        error: "LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET.",
+        code: "livekit_unconfigured",
+      });
+    }
+    const body = await readJson(req);
+    if (!body.sessionId) return sendJson(res, 400, { error: "Missing session.", code: "bad_session" });
+    if (!voiceAgentEnabled()) return sendJson(res, 200, { stopped: false });
+    const { deleteShapeRoom } = await import("./livekit-worker.js");
+    const stopped = await deleteShapeRoom(body.sessionId);
+    sendJson(res, 200, { stopped });
+    return;
+  }
+
   if (req.method === "POST" && pathname === "/api/transcribe") {
     const body = await readJson(req, 20_000_000);
     const wav = Buffer.from(body.wavBase64 || "", "base64");
@@ -302,6 +335,22 @@ async function handle(req, res) {
   serveStatic(req, res, pathname === "/" ? "/index.html" : pathname);
 }
 
+let livekitRuntime = "off";
+
+function livekitHealth() {
+  const configured = livekitConfig().configured;
+  return {
+    configured,
+    runtime: configured ? livekitRuntime : "off",
+    agent: "livekit-agents",
+    active: 0,
+    join: configured && voiceAgentEnabled() ? "on" : "off",
+    stt: sttModel(),
+    sttFallback: configured && livekitCloud() ? "livekit-inference" : "none",
+    tts: voiceTtsKind(),
+  };
+}
+
 const server = http.createServer((req, res) => {
   handle(req, res).catch((error) => {
     const status = error.status || 500;
@@ -334,5 +383,37 @@ if (isMain) {
         : `stt    browser Web Speech API  (set a META_API_KEY for ${sttModel()}; META_STT=browser keeps this fallback)`,
     );
     if (!metaKey() || forceDemo()) console.log("demo   ready — the UI runs with no API key");
+    if (livekitConfig().configured) {
+      const agent = voiceAgentEnabled() ? "livekit-agents worker" : "tokens only";
+      console.log(`livekit configured · ${agent} · tts ${voiceTtsKind()}`);
+      if (voiceAgentEnabled()) {
+        livekitRuntime = "starting";
+        import("./livekit-worker.js")
+          .then((mod) => {
+            mod.startShapeWorker();
+            const mark = () => {
+              if (mod.workerState() === "ready") livekitRuntime = "ready";
+            };
+            const timer = setInterval(mark, 500);
+            setTimeout(() => {
+              clearInterval(timer);
+              mark();
+              if (livekitRuntime !== "ready") {
+                livekitRuntime = "error";
+                console.error("[shape] livekit worker has not registered yet. Push-to-talk still works.");
+              }
+            }, 12000);
+          })
+          .catch((error) => {
+            livekitRuntime = "error";
+            console.error("[shape] livekit worker", error.message);
+          });
+      } else {
+        livekitRuntime = "off";
+      }
+    } else {
+      livekitRuntime = "off";
+      console.log("livekit off — push-to-talk only (set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)");
+    }
   });
 }
