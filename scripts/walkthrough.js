@@ -496,6 +496,21 @@ async function pushbackTurn() {
 }
 
 async function livekitHttp() {
+  const livekitMod = await import("../server/livekit.js");
+  assert.equal(typeof livekitMod.livekitHttpUrl, "function");
+  process.env.LIVEKIT_URL = "ws://127.0.0.1:7880";
+  process.env.LIVEKIT_API_KEY = "devkey";
+  process.env.LIVEKIT_API_SECRET = "secret";
+  assert.equal(livekitMod.livekitHttpUrl(), "http://127.0.0.1:7880");
+  delete process.env.LIVEKIT_URL;
+  delete process.env.LIVEKIT_API_KEY;
+  delete process.env.LIVEKIT_API_SECRET;
+  const workerMod = await import("../server/livekit-worker.js");
+  assert.equal(typeof workerMod.dispatchShape, "function");
+  assert.equal(typeof workerMod.deleteShapeRoom, "function");
+  assert.equal(typeof workerMod.startShapeWorker, "function");
+  const entry = await import("../server/agent-entry.js");
+  assert.equal(typeof entry.default.entry, "function");
   const listenPort = 3107;
   const origin = `http://127.0.0.1:${listenPort}`;
   const apiKey = "APIshapeTestKey";
